@@ -1,4 +1,3 @@
-
 // Sample usage of the DavisRFM69 library to sniff the packets from a Davis Instruments
 // wireless Integrated Sensor Suite (ISS), demostrating compatibility between the RFM69
 // and the TI CC1020 transmitter used in that hardware.  Packets received from the ISS are
@@ -35,9 +34,11 @@
 // DAVIS_FREQS_NZ MUST be defined at the top of DavisRFM69.h ***
 
 //#define IS_RFM69HW    //uncomment only for RFM69HW! Leave out if you have RFM69W!
-#define LED           9            // Moteinos have LEDs on D9
+#define LED           9  // Moteinos have LEDs on D9
 #define SERIAL_BAUD   19200        // Davis console is 19200 by default
+#define SENSOR_POLL_INTERVAL 5000  // Read indoor sensors every minute. Console uses 60 seconds
 
+#define DHT_DATA_PIN  4  // Use pin D4 to talk to the DHT22
 #define LATITUDE -1071   // Station latitude in tenths of degrees East
 #define LONGITUDE 541    // Station longitude in tenths of degrees North
 #define ELEVATION 800    // Station height above sea level in feet
@@ -48,6 +49,8 @@
 boolean strmon = false;       // Print the packet when received?
 DavisRFM69 radio;
 SPIFlash flash(8, 0xEF30); //EF40 for 16mbit windbond chip
+Adafruit_BMP085 bmp;
+DHTxx tempHum(DHT_DATA_PIN);
 RTC_DS3231 RTC;
 SerialCommand sCmd;
 
@@ -73,21 +76,21 @@ void setup() {
     Serial.println(F("Could not find a valid BMP085 sensor, check wiring!"));
     while (1) { }
   }
-  
+
   // Set up DS3231 real time clock on Moteino INT1
   Wire.begin();
   RTC.begin();
-  
+
   if (! RTC.isrunning()) {
     Serial.println(F("Could not find a valid DS3231 RTC, check wiring and ensure battery is installed!"));
     while (1) { }
   }
-  
+
   RTC.enable32kHz(false);   // We don't even connect this pin
   RTC.SQWEnable(false);     // Disabling the square wave enables the alarm interrupt
   setAlarming();
   attachInterrupt(1, rtcInterrupt, FALLING);
-  
+
   // Setup callbacks for SerialCommand commands
   sCmd.addCommand("BARDATA", cmdBardata);   // Barometer calibration data
   sCmd.addCommand("CLRLOG", cmdClrlog);     // Erase entire flash chip on Moteino
@@ -108,7 +111,7 @@ void setup() {
   sCmd.addCommand("DMPAFT", cmdDmpaft);     // Download archive records after date:time specified
   sCmd.setDefaultHandler(cmdUnrecognized);  // Handler for command that isn't matched
   sCmd.setNullHandler(cmdWake);             // Handler for an empty line to wake the simulated console
-  
+
 #if 0
   printFreeRam();
 #endif
@@ -144,19 +147,19 @@ unsigned int loopCount = 0;
 void loop() {
   if (Serial.available() > 0) loopCount = 0; // if we receive anything while sending LOOP packets, stop the stream
   sendLoopPacket(); // send out a LOOP packet if needed
-  
+
   if (oneMinutePassed) clearAlarmInterrupt();
-  
+
   sCmd.readSerial(); // Process serial commands
-  
+
   int currPeriod = millis()/SENSOR_POLL_INTERVAL;
-  
+
   if (currPeriod != lastPeriod) {
     lastPeriod=currPeriod;
     readInsideTempHum();
     readPressure();
   }
-  
+
   // The check for a zero CRC value indicates a bigger problem that will need
   // fixing, but it needs to stay until the fix is in.
   // TODO Reset the packet statistics at midnight once I get my clock module.
@@ -172,7 +175,7 @@ void loop() {
       packetStats.crcErrors++;
       packetStats.receivedStreak = 0;
     }
-    
+
     if (strmon) printStrm();
 #if 0
     Serial.print(radio.CHANNEL);
@@ -188,7 +191,7 @@ void loop() {
     lastRxTime = millis();
     radio.hop();
   }
-  
+
   // If a packet was not received at the expected time, hop the radio anyway
   // in an attempt to keep up.  Give up after 25 failed attempts.  Keep track
   // of packet stats as we go.  I consider a consecutive string of missed
@@ -211,53 +214,53 @@ void processPacket() {
   Serial.print("  Rx Byte 1: ");
   Serial.println(radio.DATA[1]);
 #endif
-  
+
   // There is a dead zone on the wind vane. No values are reported between 8
   // and 352 degrees inclusive. These values correspond to received byte
   // values of 1 and 255 respectively
   // See http://www.wxforum.net/index.php?topic=21967.50
   loopData.windDirection = 9 + radio.DATA[2] * 342.0f / 255.0f;
-  
+
 #if 0
   Serial.print(F("Wind Direction: "));
   Serial.print(loopData.windDirection);
   Serial.print(F("  Rx Byte 2: "));
   Serial.println(radio.DATA[2]);
 #endif
-  
+
   loopData.transmitterBatteryStatus = (radio.DATA[0] & 0x8) >> 3;
 #if 0
   Serial.print("Battery status: ");
   Serial.println(loopData.transmitterBatteryStatus);
 #endif
-  
+
   // Now look at each individual packet. Mask off the four low order bits. The highest order bit of the
   // four is set high when the ISS battery is low.  The low order three bits are the station ID.
-  
+
   switch (radio.DATA[0] & 0xf0) {
-    case 0x80:
-      loopData.outsideTemperature = (int16_t)(word(radio.DATA[3], radio.DATA[4])) >> 4;
+  case 0x80:
+    loopData.outsideTemperature = (int16_t)(word(radio.DATA[3], radio.DATA[4])) >> 4;
 #if 0
-      Serial.print(F("Outside Temp: "));
-      Serial.print(loopData.outsideTemperature);
-      Serial.print(F("  Rx Byte 3: "));
-      Serial.print(radio.DATA[3]);
-      Serial.print(F("  Rx Byte 4: "));
-      Serial.println(radio.DATA[4]);
+    Serial.print(F("Outside Temp: "));
+    Serial.print(loopData.outsideTemperature);
+    Serial.print(F("  Rx Byte 3: "));
+    Serial.print(radio.DATA[3]);
+    Serial.print(F("  Rx Byte 4: "));
+    Serial.println(radio.DATA[4]);
 #endif
-      break;
-    case 0xa0:
-      loopData.outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;
+    break;
+  case 0xa0:
+    loopData.outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;
 #if O
-      Serial.print("Outside Humdity: ");
-      Serial.print(loopData.outsideHumidity);
-      Serial.print("  Rx Byte 3: ");
-      Serial.print(radio.DATA[3]);
-      Serial.print("  Rx Byte 4: ");
-      Serial.println(radio.DATA[4]);
+    Serial.print("Outside Humdity: ");
+    Serial.print(loopData.outsideHumidity);
+    Serial.print("  Rx Byte 3: ");
+    Serial.print(radio.DATA[3]);
+    Serial.print("  Rx Byte 4: ");
+    Serial.println(radio.DATA[4]);
 #endif
-      break;
-      // default:
+    break;
+    // default:
   }
 #if 0
   printFreeRam();
@@ -342,73 +345,73 @@ void cmdEebrd() {
   byte response[2] = {0, 0};
   byte responseLength = 0;
   bool validCommand = true;
-  
+
   cmdMemLocation = sCmd.next();
   cmdNumBytes = sCmd.next();
   if ((cmdMemLocation != NULL) && (cmdNumBytes != NULL)) {
     switch (strtol(cmdMemLocation, NULL, 16)) {
-      case EEPROM_LATITUDE_LSB:
-        response[0] = lowByte(LATITUDE);
-        response[1] = highByte(LATITUDE);
-        responseLength = 2;
-        break;
-      case EEPROM_LONGITUDE_LSB:
-        response[0] = lowByte(LONGITUDE);
-        response[1] = highByte(LONGITUDE);
-        responseLength = 2;
-        break;
-      case EEPROM_ELEVATION_LSB:
-        response[0] = lowByte(ELEVATION);
-        response[1] = highByte(ELEVATION);
-        responseLength = 2;
-        break;
-      case EEPROM_TIME_ZONE_INDEX:
-        response[0] = GMT_ZONE_MINUS600;
-        responseLength = 1;
-        break;
-      case EEPROM_DST_MANAUTO:
-        response[0] = DST_USE_MODE_MANUAL;
-        responseLength = 1;
-        break;
-      case EEPROM_DST_OFFON:
-        response[0] = DST_SET_MODE_STANDARD;
-        responseLength = 1;
-        break;
-      case EEPROM_GMT_OFFSET_LSB:
-        // TODO GMT_OFFSETS haven't been calculated yet. Zero for now.
-        response[0] = lowByte(GMT_OFFSET_MINUS600);
-        response[1] = highByte(GMT_OFFSET_MINUS600);
-        responseLength = 2;
-        break;
-      case EEPROM_GMT_OR_ZONE:
-        response[0] = GMT_OR_ZONE_USE_INDEX;
-        responseLength = 1;
-        break;
-      case EEPROM_UNIT_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
-        response[0] = BAROMETER_UNITS_IN | TEMP_UNITS_TENTHS_F | ELEVATION_UNITS_FEET | RAIN_UNITS_IN | WIND_UNITS_MPH;
-        responseLength = 1;
-        break;
-      case EEPROM_SETUP_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
-        // TODO The AM / PM indication isn't set yet.  Need my clock chip first.
-        response[0] = LONGITUDE_WEST | LATITUDE_NORTH | RAIN_COLLECTOR_01IN | WIND_CUP_LARGE | MONTH_DAY_MONTHDAY | AMPM_TIME_MODE_24H;
-        responseLength = 1;
-        break;
-      case EEPROM_RAIN_YEAR_START:
-        response[0] = RAIN_SEASON_START_JAN;
-        responseLength = 1;
-        break;
-      case EEPROM_ARCHIVE_PERIOD:
-        // TODO We don't actually implement archiving yet
-        // Once everything is in EEPROM, we just need the number of bytes
-        // for each special memory location rather than this stupid case statement.
-        response[0] = EEPROM.read(EEPROM_ARCHIVE_PERIOD);
-        responseLength = 1;
-        break;
-      default:
-        validCommand = false;
-        printNack();
+    case EEPROM_LATITUDE_LSB:
+      response[0] = lowByte(LATITUDE);
+      response[1] = highByte(LATITUDE);
+      responseLength = 2;
+      break;
+    case EEPROM_LONGITUDE_LSB:
+      response[0] = lowByte(LONGITUDE);
+      response[1] = highByte(LONGITUDE);
+      responseLength = 2;
+      break;
+    case EEPROM_ELEVATION_LSB:
+      response[0] = lowByte(ELEVATION);
+      response[1] = highByte(ELEVATION);
+      responseLength = 2;
+      break;
+    case EEPROM_TIME_ZONE_INDEX:
+      response[0] = GMT_ZONE_MINUS600;
+      responseLength = 1;
+      break;
+    case EEPROM_DST_MANAUTO:
+      response[0] = DST_USE_MODE_MANUAL;
+      responseLength = 1;
+      break;
+    case EEPROM_DST_OFFON:
+      response[0] = DST_SET_MODE_STANDARD;
+      responseLength = 1;
+      break;
+    case EEPROM_GMT_OFFSET_LSB:
+      // TODO GMT_OFFSETS haven't been calculated yet. Zero for now.
+      response[0] = lowByte(GMT_OFFSET_MINUS600);
+      response[1] = highByte(GMT_OFFSET_MINUS600);
+      responseLength = 2;
+      break;
+    case EEPROM_GMT_OR_ZONE:
+      response[0] = GMT_OR_ZONE_USE_INDEX;
+      responseLength = 1;
+      break;
+    case EEPROM_UNIT_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
+      response[0] = BAROMETER_UNITS_IN | TEMP_UNITS_TENTHS_F | ELEVATION_UNITS_FEET | RAIN_UNITS_IN | WIND_UNITS_MPH;
+      responseLength = 1;
+      break;
+    case EEPROM_SETUP_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
+      // TODO The AM / PM indication isn't set yet.  Need my clock chip first.
+      response[0] = LONGITUDE_WEST | LATITUDE_NORTH | RAIN_COLLECTOR_01IN | WIND_CUP_LARGE | MONTH_DAY_MONTHDAY | AMPM_TIME_MODE_24H;
+      responseLength = 1;
+      break;
+    case EEPROM_RAIN_YEAR_START:
+      response[0] = RAIN_SEASON_START_JAN;
+      responseLength = 1;
+      break;
+    case EEPROM_ARCHIVE_PERIOD:
+      // TODO We don't actually implement archiving yet
+      // Once everything is in EEPROM, we just need the number of bytes
+      // for each special memory location rather than this stupid case statement.
+      response[0] = EEPROM.read(EEPROM_ARCHIVE_PERIOD);
+      responseLength = 1;
+      break;
+    default:
+      validCommand = false;
+      printNack();
     }
-    
+
     if (validCommand) {
       unsigned int crc = radio.crc16_ccitt(response, responseLength);
       printAck();
@@ -446,7 +449,7 @@ void sendLoopPacket() {
   // Calculate the CRC over the entire length of the loop packet.
   byte *loopPtr = (byte *)&loopData;
   unsigned int crc = radio.crc16_ccitt(loopPtr, sizeof(loopData));
-  
+
   for (byte i = 0; i < sizeof(loopData); i++) Serial.write(loopPtr[i]);
   Serial.write(highByte(crc));
   Serial.write(lowByte(crc));
@@ -554,13 +557,13 @@ void cmdSettime() {
     davisDateTime[i] = Serial.read();
     // delay(200);
   }
-  
+
   // Set the time only if the CRC is OK
   unsigned int crc = radio.crc16_ccitt(davisDateTime, 6);
   if (crc == (word(davisDateTime[6], davisDateTime[7]))) {
     printAck();
     RTC.adjust(DateTime(davisDateTime[5] + 1900, davisDateTime[4], davisDateTime[3], \
-                        davisDateTime[2], davisDateTime[1], davisDateTime[0]));
+      davisDateTime[2], davisDateTime[1], davisDateTime[0]));
   } else {
     printNack();
   }
@@ -572,11 +575,11 @@ void cmdDmpaft() {
   while (Serial.available() <= 0);
   for (byte i = 0; i < 6; i++) Serial.read();
   printAck();
-  
+
   // From Davis' docs:
   //   Each archive record is 52 bytes. Records are sent to the PC in 264 byte pages. Each page
   //   contains 5 archive records and 4 unused bytes.
-  
+
   // send the number of "pages" that will be sent (2 bytes), the location within the first page of the first record, and 2 Byte CRC
   byte response[4] = { 1, 0, 0, 0 }; // L,H;L,H -- 1 page; first record is #0
   unsigned int crc = radio.crc16_ccitt(response, 4);
@@ -586,7 +589,7 @@ void cmdDmpaft() {
   Serial.write(lowByte(crc));
   while (Serial.available() <= 0);
   if (Serial.read() != 0x06); // should return if condition is true, but can't get a 0x06 here for the life of me, even if weewx does send it...
-  
+
   // The format of each page is:
   // 1 Byte sequence number (starts at 0 and wraps from 255 back to 0)
   // 52 Byte Data record [5 times]
@@ -663,29 +666,29 @@ void setAlarming()
   Wire.beginTransmission(DS3231_ADDRESS);
   Wire.write(static_cast<uint8_t>(DS3231_REG_CONTROL));
   Wire.endTransmission();
-  
+
   // control register
   Wire.requestFrom(DS3231_ADDRESS, 1);
   uint8_t creg = Wire.read();     //do we need the bcd2bin
-  
+
   creg &= ~0b00000001; // Clear INTCN and A1IE to enable alarm interrupt but disable Alarm1
   creg |=  0b00000110; // Set A2IE to enable Alarm2
-  
+
   Wire.beginTransmission(DS3231_ADDRESS);
   Wire.write(static_cast<uint8_t>(DS3231_REG_CONTROL));
   Wire.write(static_cast<uint8_t>(creg));
   Wire.endTransmission();
-  
+
   Wire.beginTransmission(DS3231_ADDRESS);
   Wire.write(static_cast<uint8_t>(DS3231_REG_A2DAYDATE));
   Wire.write(static_cast<uint8_t>(0b10000000));
   Wire.endTransmission();
-  
+
   Wire.beginTransmission(DS3231_ADDRESS);
   Wire.write(static_cast<uint8_t>(DS3231_REG_A2HOURS));
   Wire.write(static_cast<uint8_t>(0b10000000));
   Wire.endTransmission();
-  
+
   Wire.beginTransmission(DS3231_ADDRESS);
   Wire.write(static_cast<uint8_t>(DS3231_REG_A2MINUTES));
   Wire.write(static_cast<uint8_t>(0b10000000));
@@ -700,4 +703,3 @@ void clearAlarmInterrupt()
   Wire.write(static_cast<uint8_t>(0b00000000));
   Wire.endTransmission();
 }
-
