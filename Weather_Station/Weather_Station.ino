@@ -1,219 +1,337 @@
-// Sample usage of the DavisRFM69 library to sniff the packets from a Davis Instruments
-// wireless Integrated Sensor Suite (ISS), demostrating compatibility between the RFM69
-// and the TI CC1020 transmitter used in that hardware.  Packets received from the ISS are
-// translated into a format compatible with the Davis Vantage Pro2 (VP2) and Vantage Vue
-// consoles.  This example also reads BMP085 and DHT22 sensors connected directly to the
-// Moteino (see below).
-// See http://madscientistlabs.blogspot.com/2014/02/build-your-own-davis-weather-station_17.html
+/*
 
-// This is part of the DavisRFM69 library from https://github.com/dekay/DavisRFM69
-// (C) DeKay 2014 dekaymail@gmail.com
-// Example released under the MIT License (http://opensource.org/licenses/mit-license.php)
-// Get the RFM69 and SPIFlash library at: https://github.com/LowPowerLab/
+To Do:
+Add additional time servers in case one or two fail
+Make pin 7 the SS since pin 9 has an LED
 
-// This program has been developed on a Moteino R3 Arduino clone with integrated RFM69W
-// transceiver module.  Note that RFM12B-based modules will not work.  See the README
-// for more details.
+ 
+Uses Moteino R4
+Pinout: http://farm4.staticflickr.com/3818/10585364014_d028c66523_o.png
+MoteinoHardware files: http://github.com/LowPowerLab/Moteino
+Moteino Forum: https://lowpowerlab.com/forum/
+Davis Serial Communication Reference Manual: http://www.davisnet.com/support/weather/downloads/software_dllsdk.asp
+Ethernet library where you can choose SS pin: http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862 
 
-#include <DavisRFM69.h>
-#include <DHTxx.h>
-#include <EEPROM.h>
-#include <SPI.h>
-#include <SPIFlash.h>
+
+Rain calculation:
+I think the way rain works is every time the the bucket tips, the byte counts up. It stays there at that value until it tips again.  When it reaches 255 it goes back to zero
+References: http://madscientistlabs.blogspot.ca/2012/05/here-comes-rain.html
+            http://www.wxforum.net/index.php?topic=22082.msg212375#msg212375
+            http://www.wxforum.net/index.php?topic=21550.new;topicseen#new - Arduino Uno weather station        
+ 
+
+Uses of the DavisRFM69 library to sniff the packets from a Davis Instruments
+wireless Integrated Sensor Suite (ISS), demostrating compatibility between the RFM69
+and the TI CC1020 transmitter used in that hardware. 
+See http://madscientistlabs.blogspot.com/2014/02/build-your-own-davis-weather-station_17.html
+
+This is part of the DavisRFM69 library from https://github.com/dekay/DavisRFM69
+(C) DeKay 2014 dekaymail@gmail.com
+Example released under the MIT License (http://opensource.org/licenses/mit-license.php)
+
+
+Weather Underground upload info
+http://wiki.wunderground.com/index.php/PWS_-_Upload_Protocol
+Sample ULR
+http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?ID=KCASANFR5&PASSWORD=XXXXXX&dateutc=2000-01-01+10%3A32%3A35&winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90&weather=&clouds=&softwaretype=vws%20versionxx&action=updateraw
+Test PWS: http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
+
+ 
+ 
+Pins:
+A4 SDA 
+A5 SCL
+D5 - Red LED
+D6 - Green LED
+D7 - Slave select - on v2 of PCB
+D8 - SS for flash (not used in this project)
+D9  PCB Led
+D10 Slave select for RFM69
+D11-13 - used for SPI
+
+Change log:
+ 
+
+*/
+
+#define VERSION "v0.1"  // version of this program
+
+
+#include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
+#include <Ethernet.h>          // Modified for user selectable SS pin  http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
+#include <EthernetUdp.h>
+#include <SPI.h>               // DavisRFM69.h needs this   http://arduino.cc/en/Reference/SPI
 #include <Wire.h>
-#include <Adafruit_BMP085.h>
-#include <SerialCommand.h>
-#include <RTC_DS3231.h>       // From https://github.com/mizraith/RTClib
+#include "RTClib.h"            // http://github.com/adafruit/RTClib
+#include <Adafruit_BMP085_U.h> // http://github.com/adafruit/Adafruit_BMP085_Unified
+#include <Adafruit_Sensor.h>   // http://github.com/adafruit/Adafruit_Sensor
+#include "Tokens.h"            // Holds Weather Underground password
 
 // Reduce number of bogus compiler warnings
-// http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
+// See: http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
 #undef PROGMEM
 #define PROGMEM __attribute__(( section(".progmem.data") ))
 
-// NOTE: *** One of DAVIS_FREQS_US, DAVIS_FREQS_EU, DAVIS_FREQS_AU, or
-// DAVIS_FREQS_NZ MUST be defined at the top of DavisRFM69.h ***
+#if !defined(__time_t_defined)
+  typedef unsigned long time_t;
+#endif
 
-//#define IS_RFM69HW    //uncomment only for RFM69HW! Leave out if you have RFM69W!
-#define LED           9  // Moteinos have LEDs on D9
-#define SERIAL_BAUD   19200        // Davis console is 19200 by default
-#define SENSOR_POLL_INTERVAL 5000  // Read indoor sensors every minute. Console uses 60 seconds
+#define PRINT_DEBUG
 
-#define DHT_DATA_PIN  4  // Use pin D4 to talk to the DHT22
-#define LATITUDE -1071   // Station latitude in tenths of degrees East
-#define LONGITUDE 541    // Station longitude in tenths of degrees North
-#define ELEVATION 800    // Station height above sea level in feet
+// Header bytes from ISS (weather station tx) that determine what measurement is being sent
+// Valid values are: 40 50 60 80 90 A0 e0
+// See http://github.com/dekay/im-me/blob/master/pocketwx/src/protocol.txt and bit.ly/1kDsXK4   
+#define ISS_OUTSIDE_TEMP 0x80
+#define ISS_HUMIDITY     0xA0
+#define ISS_RAIN         0xE0
+#define ISS_SOLAR_RAD    0x60
+#define ISS_UV_INDEX     0x40
 
-#define PACKET_INTERVAL 2555
-#define LOOP_INTERVAL 2500
+#define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
+char SERVER [] = "weatherstation.wunderground.com";  // standard server
+//char SERVER[] = "rtupdate.wunderground.com";           // Realtime update server
 
-boolean strmon = false;       // Print the packet when received?
+
+// Ethernet and time server setup
+IPAddress timeServer( 132, 163, 4, 101 );    // ntp1.nl.net NTP server
+// IPAddress timeServer (132, 163, 4, 102); // time-b.timefreq.bldrdoc.gov NTP server
+// IPAddress timeServer (132, 163, 4, 103);
+// IPAddress timeServer (192, 43, 244, 18); // time.nist.gov NTP server
+const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
+byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
+
+byte moteinoMac[] = { 0xDE, 0xAD, 0xBE, 0xAA, 0xAB, 0xA4 };
+IPAddress moteinoIp( 192, 168, 216, 46 );
+
+EthernetClient client;
+EthernetUDP Udp;          // UDP for the time server
+
+// Weather data that's not in LoopPacket in DavidRFM69.cpp
+byte rainCounter = 0;   // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 255 then rolls over to zero
+byte windgustmph = 0;   // Wind in MPH
+float dewpoint = 0.0;   // Dewpoint F
+
+const byte RED_LED = 5;
+const byte GRN_LED = 6;
+const byte MOTEINO_LED = 8;  // Change to pin 9 in v2
+const byte ETH_SS_PIN = 9;  // Ethernet slave select pin, chage to pin 7 in v2
+
 DavisRFM69 radio;
-SPIFlash flash(8, 0xEF30); //EF40 for 16mbit windbond chip
-Adafruit_BMP085 bmp;
-DHTxx tempHum(DHT_DATA_PIN);
-RTC_DS3231 RTC;
-SerialCommand sCmd;
+LoopPacket loopData;  // structure to hold most of the weather station data (see DavisRFM69.h). There's a lot of unused variables because this sketch doesn't interface with the weather console
+RTC_Millis rtc;  // software clock
+Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085); // Barometric pressure sensor, uses I2C. http://www.adafruit.com/products/1603
 
-LoopPacket loopData;
-volatile bool oneMinutePassed = false;
+// Function Prototypes
+bool getWirelessData();
+void processPacket();
+bool uploadWeatherData();
+void updateRainAccum();
+void updateWindGusts();
+bool updateBaromoter();
+bool updateInsideTemp();
+float dewPointFast(float tempF, byte humidity);
+float dewPoint(float tempf, byte humidity);
+void printFreeRam();
+void printStrm();
+void blink(byte PIN, int DELAY_MS);
+void getUtcTime(char timebuf[]);
+bool isNewMinute();
+bool isNewDay();
+int estOffset();
+void printURL();
+time_t getNtpTime();
+void sendNTPpacket(IPAddress &address);
+void softReset();
 
-void rtcInterrupt(void) {
-  oneMinutePassed = true;
-}
+//=============================================================================
+//=============================================================================
+void setup() 
+{
+  Serial.begin(9600);
+  
+  pinMode(MOTEINO_LED, OUTPUT);
+  pinMode(GRN_LED,     OUTPUT);
+  pinMode(RED_LED,     OUTPUT);
 
-void setup() {
-  Serial.begin(SERIAL_BAUD);
-  delay(10);
-  radio.initialize();
-  radio.setChannel(0);              // Frequency / Channel is *not* set in the initialization. Do it right after.
-#ifdef IS_RFM69HW
-  radio.setHighPower(); //uncomment only for RFM69HW!
-#endif
-  // Initialize the loop data array
-  memcpy(&loopData, &loopInit, sizeof(loopInit));
+  // Flash LEDs
+  for (int i = 0; i < 6; i++)
+  {
+    digitalWrite(MOTEINO_LED, !digitalRead(MOTEINO_LED));
+    digitalWrite(GRN_LED,     !digitalRead(GRN_LED));
+    digitalWrite(RED_LED,     !digitalRead(RED_LED));
+    delay(50);
+  }
+  
+  // Setup Moteino radio
+//srg  radio.initialize();
+//srg  radio.setChannel(0);      // Frequency / Channel is *not* set in the initialization. Do it right after.
+
+  
+  memcpy(&loopData, &loopInit, sizeof(loopInit));  // Initialize the loop data array
+  
+  // Setup Ethernet
+  Ethernet.select(ETH_SS_PIN);  // Set slave select pin - requires modified Ethernet.h library
+//  Ethernet.begin(moteinoMac, moteinoIp);  // This uses less memory but isn't working with WIZ811MJ; works fine with Ethernet shield
+  Ethernet.begin(moteinoMac);  
+  Serial.println(Ethernet.localIP());
+  Udp.begin(8888);  // local port 8888 to listen for UDP packet
+  
+  // Get time from NTP server
+  time_t t = getNtpTime();
+  if ( t != 0 )
+  { 
+    rtc.begin(DateTime(t));
+    DateTime now = rtc.now();
+    #ifdef PRINT_DEBUG
+      Serial.println(F("Got time from NTP server"));
+    #endif
+  }
+  #ifdef PRINT_DEBUG
+  else
+  { Serial.println(F("Did not get NTP time in setup")); }
+  #endif
+  
   // Set up BMP085 pressure and temperature sensor
-  if (!bmp.begin()) {
-    Serial.println(F("Could not find a valid BMP085 sensor, check wiring!"));
-    while (1) { }
-  }
+  if (!bmp.begin())
+  { Serial.println(F("Could not find a valid BMP180 sensor")); }
 
-  // Set up DS3231 real time clock on Moteino INT1
-  Wire.begin();
-  RTC.begin();
+  
+  Serial.print(F("Weather Station "));
+  Serial.println(VERSION);
 
-  if (! RTC.isrunning()) {
-    Serial.println(F("Could not find a valid DS3231 RTC, check wiring and ensure battery is installed!"));
-    while (1) { }
-  }
-
-  RTC.enable32kHz(false);   // We don't even connect this pin
-  RTC.SQWEnable(false);     // Disabling the square wave enables the alarm interrupt
-  setAlarming();
-  attachInterrupt(1, rtcInterrupt, FALLING);
-
-  // Setup callbacks for SerialCommand commands
-  sCmd.addCommand("BARDATA", cmdBardata);   // Barometer calibration data
-  sCmd.addCommand("CLRLOG", cmdClrlog);     // Erase entire flash chip on Moteino
-  sCmd.addCommand("DUMPREG", cmdDumpreg);   // Dump radio registers - undocumented command
-  sCmd.addCommand("EEBRD", cmdEebrd);       // EEPROM Read
-  sCmd.addCommand("HILOWS", cmdHiLows);     // Send the HILOW data
-  sCmd.addCommand("LOOP", cmdLoop);         // Send the loop data
-  sCmd.addCommand("NVER", cmdNver);         // Send the version string
-  sCmd.addCommand("RXCHECK", cmdRxcheck);   // Receiver Stats check
-  sCmd.addCommand("SETPER", cmdSetper);     // Set archive interval period
-  sCmd.addCommand("STRMOFF", cmdStrmoff);   // Disable printing of received packet data
-  sCmd.addCommand("STRMON", cmdStrmon);     // Enable printing of received packet data
-  sCmd.addCommand("TEST", cmdTest);         // Echo's "TEST"
-  sCmd.addCommand("VER", cmdVer);           // Send the associated date for this version
-  sCmd.addCommand("WRD\x12M", cmdWRD);      // Support the Davis legacy "WRD" command
-  sCmd.addCommand("GETTIME", cmdGettime);   // Send back current RTC date/time
-  sCmd.addCommand("SETTIME", cmdSettime);   // Update current RTC date/time from PC
-  sCmd.addCommand("DMPAFT", cmdDmpaft);     // Download archive records after date:time specified
-  sCmd.setDefaultHandler(cmdUnrecognized);  // Handler for command that isn't matched
-  sCmd.setNullHandler(cmdWake);             // Handler for an empty line to wake the simulated console
-
-#if 0
   printFreeRam();
-#endif
-}
 
-// See https://github.com/dekay/im-me/blob/master/pocketwx/src/protocol.txt
-// Console update rates: * indicates what is done, X indicates ignored, ? indicates in progress
-// - Clock display updates once per minute
-// * Barometric pressure once per minute
-// - Dewpoint every ten to twelve seconds (calculated)
-// - Forecast, evapotranspiration, and heat index every hour
-// * Inside humidity every minute
-// * Outside humidity every 50 to 60 seconds
-// - Leaf wetness every 46 to 64 seconds
-// - Rainfall and rain rate every 20 to 24 seconds
-// - Soil moisture every 77 to 90 seconds
-// - UV, UV Index and solar radiation every 50 to 60 secondes (5 minutes when dark)
-// * Inside temperature every minute
-// * Outside temperature every 10 to 12 seconds
-// X Extra temperature sensors or probes every 10 to 12 seconds
-// - Temperature humidity sun wind index every 10 to 12 seconds
-// - Wind chill every 10 to 12 seconds (calculated)
-// ? Wind direction every 2.5 - 3 seconds
-// * Wind speed every 2.5 - 3 seconds
-// - Wind speed 10 minute average every minute
+}  // end setup()
 
-long lastPeriod = -1;
-unsigned long lastRxTime = 0;
-unsigned long lastLoopTime = 0;
-byte hopCount = 0;
-unsigned int loopCount = 0;
 
-void loop() {
-  if (Serial.available() > 0) loopCount = 0; // if we receive anything while sending LOOP packets, stop the stream
-  sendLoopPacket(); // send out a LOOP packet if needed
-
-  if (oneMinutePassed) clearAlarmInterrupt();
-
-  sCmd.readSerial(); // Process serial commands
-
-  int currPeriod = millis()/SENSOR_POLL_INTERVAL;
-
-  if (currPeriod != lastPeriod) {
-    lastPeriod=currPeriod;
-    readInsideTempHum();
-    readPressure();
+void loop()
+{
+  static uint32_t uploadTimer = 0; // timer to send data to weather underground
+  DateTime now = rtc.now();
+  
+//srg  getWirelessData();
+  updateRainAccum();
+  updateWindGusts();
+  updateBaromoter();
+  updateInsideTemp();
+  
+  
+  // create dummy data
+  loopData.windSpeed = 3;
+  windgustmph =  loopData.windSpeed * 2;
+  loopData.windDirection = 180;
+  loopData.outsideTemperature = 689;
+  loopData.outsideHumidity = 69;
+  loopData.insideTemperature = 7550;
+  loopData.rainRate = 0;
+  loopData.dayRain = 3;
+  loopData.barometer = 30170;
+  dewpoint = dewPointFast((float)loopData.outsideTemperature/10.0, loopData.outsideHumidity);
+  
+  // Send data to Weather Underground
+  if( (long)(millis() - uploadTimer) > 0 && now.year() >= 2014 )
+  {
+    uploadWeatherData();
+    uploadTimer = millis() + 10000; // upload again in 10 seconds
+    //  printURL();
   }
 
+  
+  // Reboot if millis is close to rollover. RTC_Millis won't work properly if millis rolls over.  Takes about 49 days
+  if( millis() > 4294000000UL )
+  { softReset(); }
+  
+  
+}  // end loop()
+
+
+// Read wireless data coming from Davis ISS weather station
+bool getWirelessData()
+{
+  
+  static uint32_t lastRxTime = 0;
+  static byte hopCount = 0;
+
+  bool gotGoodData = false;
+  
   // The check for a zero CRC value indicates a bigger problem that will need
   // fixing, but it needs to stay until the fix is in.
   // TODO Reset the packet statistics at midnight once I get my clock module.
-  if (radio.receiveDone()) {
+  if ( radio.receiveDone() )
+  {
     packetStats.packetsReceived++;
     unsigned int crc = radio.crc16_ccitt(radio.DATA, 6);
-    if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0)) {
+    if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0))
+    {
       processPacket();
       packetStats.receivedStreak++;
       hopCount = 1;
-      blink(LED,3);
-    } else {
+      blink(GRN_LED, 50);
+      #ifdef PRINT_DEBUG
+        Serial.println(F("Got good packet"));
+      #endif
+      gotGoodData = true;
+    }
+    else
+    {
       packetStats.crcErrors++;
       packetStats.receivedStreak = 0;
+      blink(GRN_LED, 50);
+      #ifdef PRINT_DEBUG
+        Serial.println(F("Got bad packet"));
+      #endif
     }
-
-    if (strmon) printStrm();
-#if 0
-    Serial.print(radio.CHANNEL);
-    Serial.print(F(" - Data: "));
-    for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
+    
+#ifdef PRINT_DEBUG
+    Serial.print("ch: ");
+    Serial.println(radio.CHANNEL);
+    Serial.print(F("Data: "));
+    for (byte i = 0; i < DAVIS_PACKET_LEN; i++)
+    {
       Serial.print(radio.DATA[i], HEX);
       Serial.print(F(" "));
     }
-    Serial.print(F("  RSSI: "));
+    Serial.println();
+    Serial.print(F("RSSI: "));
     Serial.println(radio.RSSI);
+    Serial.println(F("----------------------------"));
 #endif
-    // Whether CRC is right or not, we count that as reception and hop.
+    
+    // Whether CRC is right or not, we count that as reception and hop
     lastRxTime = millis();
     radio.hop();
-  }
-
+  } // end if(radio.receiveDone())
+  
   // If a packet was not received at the expected time, hop the radio anyway
   // in an attempt to keep up.  Give up after 25 failed attempts.  Keep track
   // of packet stats as we go.  I consider a consecutive string of missed
   // packets to be a single resync.  Thx to Kobuki for this algorithm.
-  if ((hopCount > 0) && ((millis() - lastRxTime) > (hopCount * PACKET_INTERVAL + 200))) {
+  const int PACKET_INTERVAL = 2555;
+  if ( (hopCount > 0) && ((millis() - lastRxTime) > (hopCount * PACKET_INTERVAL + 200)) )
+  {
     packetStats.packetsMissed++;
     if (hopCount == 1) packetStats.numResyncs++;
     if (++hopCount > 25) hopCount = 0;
     radio.hop();
   }
-}
 
-// Read the data from the ISS and figure out what to do with it
+  return gotGoodData;
+  
+} // end getWirelessData()
+
+//=============================================================================
+// Read the data from the ISS 
+//=============================================================================
 void processPacket() {
-  // Every packet has wind speed, direction, and battery status in it
+  // Every packet has wind speed, direction and battery status in it
   loopData.windSpeed = radio.DATA[1];
-#if 0
-  Serial.print("Wind Speed: ");
-  Serial.print(loopData.windSpeed);
-  Serial.print("  Rx Byte 1: ");
-  Serial.println(radio.DATA[1]);
-#endif
+  
+  #ifdef PRINT_DEBUG
+    Serial.print("Wind Speed: ");
+    Serial.print(loopData.windSpeed);
+    Serial.print("  Rx Byte 1: ");
+    Serial.println(radio.DATA[1]);
+  #endif
 
   // There is a dead zone on the wind vane. No values are reported between 8
   // and 352 degrees inclusive. These values correspond to received byte
@@ -221,485 +339,522 @@ void processPacket() {
   // See http://www.wxforum.net/index.php?topic=21967.50
   loopData.windDirection = 9 + radio.DATA[2] * 342.0f / 255.0f;
 
-#if 0
-  Serial.print(F("Wind Direction: "));
-  Serial.print(loopData.windDirection);
-  Serial.print(F("  Rx Byte 2: "));
-  Serial.println(radio.DATA[2]);
-#endif
-
+  #ifdef PRINT_DEBUG
+    Serial.print(F("Wind Direction: "));
+    Serial.print(loopData.windDirection);
+    Serial.print(F("  Rx Byte 2: "));
+    Serial.println(radio.DATA[2]);
+  #endif
+  
+  // 0 = battery ok, 1 = battery low
   loopData.transmitterBatteryStatus = (radio.DATA[0] & 0x8) >> 3;
-#if 0
-  Serial.print("Battery status: ");
-  Serial.println(loopData.transmitterBatteryStatus);
-#endif
+  
+  #ifdef PRINT_DEBUG
+    Serial.print("Battery status: ");
+    Serial.println(loopData.transmitterBatteryStatus);
+  #endif
 
   // Now look at each individual packet. Mask off the four low order bits. The highest order bit of the
   // four is set high when the ISS battery is low.  The low order three bits are the station ID.
+  switch (radio.DATA[0] & 0xf0) 
+  {
 
-  switch (radio.DATA[0] & 0xf0) {
-  case 0x80:
+  float outHumidity;  // outside humidity, used for rounding to nearest integer
+  
+  case ISS_OUTSIDE_TEMP:
     loopData.outsideTemperature = (int16_t)(word(radio.DATA[3], radio.DATA[4])) >> 4;
-#if 0
-    Serial.print(F("Outside Temp: "));
-    Serial.print(loopData.outsideTemperature);
-    Serial.print(F("  Rx Byte 3: "));
-    Serial.print(radio.DATA[3]);
-    Serial.print(F("  Rx Byte 4: "));
-    Serial.println(radio.DATA[4]);
-#endif
+    #ifdef PRINT_DEBUG
+      Serial.print(F("Outside Temp: "));
+      Serial.print(loopData.outsideTemperature);
+      Serial.print(F("  Byte 3: 0x"));
+      Serial.print(radio.DATA[3], HEX);
+      Serial.print(F("  Byte 4: 0x"));
+      Serial.println(radio.DATA[4], HEX);
+    #endif
     break;
-  case 0xa0:
-    loopData.outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;
-#if O
-    Serial.print("Outside Humdity: ");
-    Serial.print(loopData.outsideHumidity);
-    Serial.print("  Rx Byte 3: ");
-    Serial.print(radio.DATA[3]);
-    Serial.print("  Rx Byte 4: ");
-    Serial.println(radio.DATA[4]);
-#endif
+
+  case ISS_HUMIDITY:
+    outHumidity = (float)( word((radio.DATA[4] >> 4), radio.DATA[3]) ) / 10.0;
+    // Round humidity to nearest integer
+    loopData.outsideHumidity = (byte) ( outHumidity + 0.5 );
+    dewpoint = dewPointFast( (float)loopData.outsideTemperature/10.0, loopData.outsideHumidity);
+    #ifdef PRINT_DEBUG
+      Serial.print("Outside Humidity: ");
+      Serial.print(loopData.outsideHumidity);
+      Serial.print(F("  Byte 3: 0x"));
+      Serial.print(radio.DATA[3], HEX);
+      Serial.print(F("  Byte 4: 0x"));
+      Serial.println(radio.DATA[4], HEX);
+    #endif
     break;
-    // default:
-  }
-#if 0
-  printFreeRam();
-#endif
-}
+    
+  case ISS_RAIN: 
+    rainCounter =  radio.DATA[3];
+    #ifdef PRINT_DEBUG
+      Serial.print("Rain: ");
+      Serial.print(rainCounter);
+      Serial.print(F("  Byte 3: "));
+      Serial.print(radio.DATA[3]);
+      Serial.print(F("  Byte 4: "));
+      Serial.println(radio.DATA[4]);
+    #endif
+    break;
 
-// Indoor temperature and humidity is read once per minute
-void readInsideTempHum() {
-  int16_t insideTempC, insideHumidity;
-  if (tempHum.reading(insideTempC, insideHumidity, true)) {
-    // Temperature and humidity are returned in tenths of a deg C and tenths of a percent, respectively
-    // Values out of the console are tenths of a deg F and integer percent values.  PITA.
-    loopData.insideTemperature = insideTempC*1.8 + 320;
-    loopData.insideHumidity = (insideHumidity + 5) * 0.1;  // Round the reading
-#if 0
-    Serial.print(F("Inside TempC: "));
-    Serial.print(insideTempC);
-    Serial.print(F("  Loop Inside TempF: "));
-    Serial.println(loopData.insideTemperature);
-    printFreeRam();
-#endif
-#if 0
-    Serial.print(F("Inside Humidity Raw: "));
-    Serial.print(insideHumidity);
-    Serial.print(F("  Loop Value: "));
-    Serial.println(loopData.insideHumidity);
-    printFreeRam();
-#endif
-  }
-}
+   case ISS_SOLAR_RAD:
+   loopData.solarRadiation = 0; // srg - need forumla
+    #ifdef PRINT_DEBUG
+      Serial.print("Solar Raidiation: ?? ");
+      Serial.print(loopData.solarRadiation);
+      Serial.print(F("  Byte 3: 0x"));
+      Serial.print(radio.DATA[3], HEX);
+      Serial.print(F("  Byte 4: 0x"));
+      Serial.println(radio.DATA[4], HEX);
+    #endif
+    break;
+     
+   case ISS_UV_INDEX:
+   loopData.uV = 0; // srg - need forumla
+    #ifdef PRINT_DEBUG
+      Serial.print("UV Index: ?? ");
+      Serial.print(loopData.uV);
+      Serial.print(F("  Byte 3: 0x"));
+      Serial.print(radio.DATA[3], HEX);
+      Serial.print(F("  Byte 4: 0x"));
+      Serial.println(radio.DATA[4], HEX);
+    #endif
+    break;
 
+    default:
+    #ifdef PRINT_DEBUG
+      Serial.print("Other header: 0x");
+      Serial.print(radio.DATA[0] & 0xf0, HEX);
+      Serial.print(F("  Byte 3: 0x"));
+      Serial.print(radio.DATA[3], HEX);
+      Serial.print(F("  Byte 4: 0x"));
+      Serial.println(radio.DATA[4], HEX);
+    #endif
+    break; 
+  }
+  
+} //  end processPacket()
+
+
+// Upload to Weather Underground
+bool uploadWeatherData()
+{
+   // Get UTC time and format
+  char dateutc[25];
+  getUtcTime(dateutc);  
+
+  // Send the Data to weather underground
+  if (client.connect(SERVER, 80))
+  {
+    client.print("GET /weatherstation/updateweatherstation.php?ID=");
+    client.print(WUNDERGROUND_STATION_ID);
+    client.print("&PASSWORD=");
+    client.print(WUNDERGROUND_PWD);
+    client.print("&dateutc=");
+    client.print(dateutc);
+    client.print("&winddir=");
+    client.print(loopData.windDirection);
+    client.print("&windspeedmph=");
+    client.print(loopData.windSpeed);
+    client.print("&windgustmph=");
+    client.print(windgustmph);
+    client.print("&tempf=");
+    client.print((float)loopData.outsideTemperature / 10.0);
+    if ( loopData.insideTemperature > 350 )  // remember temp is in 1/10 degrees
+    {
+      client.print("&indoortempf=");
+      client.print((float)loopData.insideTemperature / 10.0);
+    }
+    client.print("&rainin=");
+    client.print((float)loopData.rainRate / 100.0);  // rain inches over the past hour
+    client.print("&dailyrainin=");   // rain inches so far today in local time
+    client.print((float)loopData.dayRain / 100.0);  //
+    client.print("&baromin=");
+    client.print((float)loopData.barometer / 1000.0);
+    client.print("&dewptf=");
+    client.print(dewpoint);
+    client.print("&humidity=");
+    client.print(loopData.outsideHumidity);
+    client.print("&softwaretype=Arduino%20Moteino%20");
+    client.print(VERSION);
+    client.print("&action=updateraw");
+    client.println();
+  }
+  else
+  {
+    #ifdef PRINT_DEBUG
+      Serial.println(F("\nWunderground connection failed"));
+    #endif
+    client.stop();
+    delay(500);
+    return false;
+  }
+  
+  uint32_t lastRead = millis();
+  while (client.connected() && (millis() - lastRead < 1000))  // wait up to one second for server response
+  {
+    if (client.available())
+    {
+      char c = client.read();
+      #ifdef PRINT_DEBUG
+        Serial.print(c);
+      #endif
+    }
+  }
+  
+  client.stop();
+  return true;
+  
+} // end uploadWeatherData()
+
+
+// Updates loopData.rainRate - rain in past 60 minutes
+//         loopData.dayRain - rain today (local time)
+// Everything is in 0.01" units of rain
+void updateRainAccum()
+{
+  static uint8_t rainEachMinute[60]; // array holds incremental rain for each minute of the hour
+  static uint8_t prevRainCnt = 0;    // rain count (not incremental) from previous minute
+  
+  if ( isNewMinute() )
+  {
+    DateTime now = rtc.now();
+    uint8_t newMinute = now.minute();
+    
+    // Calculate new rain since since the last minute
+    int newRain; // incremental new rain since last minute
+    if ( rainCounter < prevRainCnt )
+    { newRain = (256 - prevRainCnt) + rainCounter; } // counter has rolled over
+    else
+    { newRain = rainCounter - prevRainCnt; }
+    
+    // add new rain and remove rain from an hour ago
+    loopData.rainRate = loopData.rainRate + newRain - rainEachMinute[newMinute];
+    
+    rainEachMinute[newMinute] = newRain;  // Update array with latest rain amount
+    prevRainCnt = rainCounter;
+    
+    // Increment daily rain counter
+    loopData.dayRain += newRain;
+  }
+  
+  // reset daily rain accumulation
+  if ( isNewDay() );
+  { loopData.dayRain = 0; }
+  
+} // end updateRainAccum()
+
+
+// Update wind gust calculation
+// Weather Underground wind variables.  Sketch only uses: winddir, windspeedmph, windgustmph
+// winddir - [0-360 instantaneous wind direction]
+//    windspeedmph - [mph instantaneous wind speed]
+//    windgustmph - [mph current wind gust, using software specific time period]
+//    windgustdir - [0-360 using software specific time period]
+//    windspdmph_avg2m  - [mph 2 minute average wind speed mph]
+//    winddir_avg2m - [0-360 2 minute average wind direction]
+//    windgustmph_10m - [mph past 10 minutes wind gust mph ]
+//    windgustdir_10m - [0-360 past 10 minutes wind gust direction]
+void updateWindGusts()
+{
+  const uint32_t TWO_MINUTES = 120000;
+  static uint32_t windGustTmr2min = 0;  // two minute wind gust timer.
+  
+  if ( (long)(millis() - windGustTmr2min) > 0 )
+  {
+    windgustmph = loopData.windSpeed;  // reset wind gust
+    windGustTmr2min = millis() + TWO_MINUTES;
+  }
+  else
+  {
+    if ( loopData.windSpeed > windgustmph )
+    { windgustmph = loopData.windSpeed; }
+  }
+
+}  // end updateWindGusts()
+
+
+// Get pressure reading from baromoter - located inside, not outside on weather station
 // Barometric pressure is read once per minute
 // Units from the BMP085 are Pa.  Need to convert to thousandths of inches of Hg.
-void readPressure() {
-  loopData.barometer = bmp.readPressure()*0.29529987508;
-#if 0
-  Serial.print(F("Pressure: "));
-  Serial.println(loopData.barometer);
-  printFreeRam();
-#endif
-}
+bool updateBaromoter()
+{
 
-//--- Console command emulation ---//
+  sensors_event_t event;
+  bmp.getEvent(&event);
+  
+  if (event.pressure)
+  {
+    loopData.barometer = event.pressure;
+    return true;
+  }
+  else
+  {
+    #ifdef PRINT_DEBUT
+      Serial.println(F("Barometric sensor error"));
+    #endif
+    return false;
+  }
+ 
+} // end updateBaromoter()
 
-void cmdBardata() {
-  // TODO Fix dew point, virtual temp, C, and R
-  // TODO Allow entry of Elevation and BARCAL
-  printOk();
-  Serial.print(F("BAR "));
-  Serial.print(loopData.barometer);
-  Serial.print(F("\n\rELEVATION "));
-  Serial.print(ELEVATION);
-  Serial.print(F("\n\rDEW POINT "));
-  Serial.print(loopData.outsideTemperature);
-  Serial.print(F("\n\rVIRTUAL TEMP "));
-  Serial.print(loopData.outsideTemperature);
-  Serial.print(F("\n\rC "));
-  Serial.print(29);
-  Serial.print(F("\n\rR "));
-  Serial.print(1001);
-  Serial.print(F("\n\rBARCAL "));
-  Serial.print(0);
-  // These factory cal values have no meaning in our implementation
-  Serial.print(F("\n\rGAIN 1\n\rOFFSET 0\n\r"));
-}
 
-void cmdClrlog() {
-  printAck();
-  flash.chipErase();
-}
+// Inside temperature from BMP180 sensor
+bool updateInsideTemp()
+{
+  float temperature;
+  bmp.getTemperature(&temperature);
+  if (temperature > 35 && temperature < 110) // Validate indoor temperature range
+  {
+    loopData.insideTemperature = temperature * 10.0;
+    return true;
+  }
+  else
+  { return false; }
+  
+} // end updateInsideTemp()
 
-void cmdDumpreg() {
-  radio.readAllRegs();
-  Serial.println();
-}
 
-void cmdEebrd() {
-  // TODO This is in the middle of a transition and will need to be reworked at
-  // some point.  The idea is to use the real Moteino EEPROM to store this
-  // stuff.  See the EEPROM_ARCHIVE_PERIOD for a start.
-  char *cmdMemLocation, *cmdNumBytes;
-  byte response[2] = {0, 0};
-  byte responseLength = 0;
-  bool validCommand = true;
+// Calculate the dew point, this is supposed to do fast
+// Ref: http://playground.arduino.cc/Main/DHT11Lib
+float dewPointFast(float tempF, byte humidity)
+{
+  float celsius = ( tempF - 32.0 ) / 1.8;
+  float a = 17.271;
+  float b = 237.7;
+  float temp = (a * celsius) / (b + celsius) + log( (float)humidity * 0.01);
+  float Td = (b * temp) / (a - temp);
+  Td = Td * 1.8 + 32.0;  // convert back to Fahrenheit
+  return Td;
+} // end dewPointFast()
 
-  cmdMemLocation = sCmd.next();
-  cmdNumBytes = sCmd.next();
-  if ((cmdMemLocation != NULL) && (cmdNumBytes != NULL)) {
-    switch (strtol(cmdMemLocation, NULL, 16)) {
-    case EEPROM_LATITUDE_LSB:
-      response[0] = lowByte(LATITUDE);
-      response[1] = highByte(LATITUDE);
-      responseLength = 2;
-      break;
-    case EEPROM_LONGITUDE_LSB:
-      response[0] = lowByte(LONGITUDE);
-      response[1] = highByte(LONGITUDE);
-      responseLength = 2;
-      break;
-    case EEPROM_ELEVATION_LSB:
-      response[0] = lowByte(ELEVATION);
-      response[1] = highByte(ELEVATION);
-      responseLength = 2;
-      break;
-    case EEPROM_TIME_ZONE_INDEX:
-      response[0] = GMT_ZONE_MINUS600;
-      responseLength = 1;
-      break;
-    case EEPROM_DST_MANAUTO:
-      response[0] = DST_USE_MODE_MANUAL;
-      responseLength = 1;
-      break;
-    case EEPROM_DST_OFFON:
-      response[0] = DST_SET_MODE_STANDARD;
-      responseLength = 1;
-      break;
-    case EEPROM_GMT_OFFSET_LSB:
-      // TODO GMT_OFFSETS haven't been calculated yet. Zero for now.
-      response[0] = lowByte(GMT_OFFSET_MINUS600);
-      response[1] = highByte(GMT_OFFSET_MINUS600);
-      responseLength = 2;
-      break;
-    case EEPROM_GMT_OR_ZONE:
-      response[0] = GMT_OR_ZONE_USE_INDEX;
-      responseLength = 1;
-      break;
-    case EEPROM_UNIT_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
-      response[0] = BAROMETER_UNITS_IN | TEMP_UNITS_TENTHS_F | ELEVATION_UNITS_FEET | RAIN_UNITS_IN | WIND_UNITS_MPH;
-      responseLength = 1;
-      break;
-    case EEPROM_SETUP_BITS:  // Memory location for setup bits. Assume one byte is being asked for.
-      // TODO The AM / PM indication isn't set yet.  Need my clock chip first.
-      response[0] = LONGITUDE_WEST | LATITUDE_NORTH | RAIN_COLLECTOR_01IN | WIND_CUP_LARGE | MONTH_DAY_MONTHDAY | AMPM_TIME_MODE_24H;
-      responseLength = 1;
-      break;
-    case EEPROM_RAIN_YEAR_START:
-      response[0] = RAIN_SEASON_START_JAN;
-      responseLength = 1;
-      break;
-    case EEPROM_ARCHIVE_PERIOD:
-      // TODO We don't actually implement archiving yet
-      // Once everything is in EEPROM, we just need the number of bytes
-      // for each special memory location rather than this stupid case statement.
-      response[0] = EEPROM.read(EEPROM_ARCHIVE_PERIOD);
-      responseLength = 1;
-      break;
-    default:
-      validCommand = false;
-      printNack();
+// Another dewpoint calculation
+float dewPoint(float tempf, byte humidity)
+{
+  float A0 = 373.15/(273.15 + tempf);
+  float SUM = -7.90298 * (A0-1);
+  SUM += 5.02808 * log10(A0);
+  SUM += -1.3816e-7 * (pow(10, (11.344*(1-1/A0)))-1) ;
+  SUM += 8.1328e-3 * (pow(10,(-3.49149*(A0-1)))-1) ;
+  SUM += log10(1013.246);
+  float VP = pow(10, SUM-3) * (float) humidity;
+  float T = log(VP/0.61078);
+  return (241.88 * T) / (17.558-T);
+} // end dewPoint()
+
+
+
+// Format GMT Time the way weather underground wants
+// dateutc - [YYYY-MM-DD HH:MM:SS (mysql format)]
+// Time is 23 characters long, 
+// Data need to be URL escaped: 2014-01-01 10:32:35 becomes 2014-01-01+10%3A32%3A35
+// Every 10 minutes sketch will query NTP time server to update the time
+void getUtcTime(char timebuf[])
+{
+  static uint32_t refreshNTPTimeTimer = 0; // Timer used to determine when to get time from NTP time server
+   
+  if( (long)(millis() - refreshNTPTimeTimer) > 0 )
+  {
+    // Update NTP time
+    time_t t = getNtpTime();
+    if ( t != 0 )
+    {
+      rtc.adjust(DateTime(t));
+      refreshNTPTimeTimer = millis() + 600000;  // Get NTP time again in 10 minutes
     }
-
-    if (validCommand) {
-      unsigned int crc = radio.crc16_ccitt(response, responseLength);
-      printAck();
-      for (byte i = 0; i < responseLength; i++) Serial.write(response[i]);
-      Serial.write(highByte(crc));
-      Serial.write(lowByte(crc));
+    else
+    {
+      #ifdef PRINT_DEBUG
+        Serial.println("NTP Update failed");
+     #endif
     }
-  } else {
-    printNack();
   }
-}
+  // Get UTC time and format for weather underground
+  DateTime now = rtc.now();
+  sprintf(timebuf, "%d-%02d-%02d+%02d%%3A%02d%%3A%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
 
-// We just don't have enough memory to support this.  Fail.
-void cmdHiLows() {
-  printAck();
-  for (int i = 0; i < HI_LOWS_LENGTH + 2; i++) Serial.write(0);
-}
+} // end getUtcTime()
 
-void cmdLoop() {
-  char *loops;
-  lastLoopTime = 0;
-  printAck();
-  loops = sCmd.next();
-  if (loops != NULL) {
-    loopCount = strtol(loops, NULL, 10);
-  } else {
-    loopCount = 1;
+
+// Returns true if there there is a new minute
+// Used by rain accumulation array
+bool isNewMinute()
+{
+  DateTime now = rtc.now();
+  static uint8_t prevMinute = now.minute();
+  if ( prevMinute == now.minute() )
+  { return false; }
+  else
+  { 
+    prevMinute = now.minute();
+    return true; 
   }
-}
+} // end isNewMinute()
 
-void sendLoopPacket() {
-  if (loopCount <= 0 || millis() - lastLoopTime < LOOP_INTERVAL) return;
-  lastLoopTime = millis();
-  loopCount--;
-  // Calculate the CRC over the entire length of the loop packet.
-  byte *loopPtr = (byte *)&loopData;
-  unsigned int crc = radio.crc16_ccitt(loopPtr, sizeof(loopData));
-
-  for (byte i = 0; i < sizeof(loopData); i++) Serial.write(loopPtr[i]);
-  Serial.write(highByte(crc));
-  Serial.write(lowByte(crc));
-}
-
-void cmdNver() {
-  printOk();
-  Serial.print(F("1.90\n\r"));
-}
-
-// Print receiver stats
-void cmdRxcheck() {
-  printAck();
-  printOk();
-  uint16_t *statsPtr = (uint16_t *)&packetStats;
-  for (byte i = 0; i < (sizeof(packetStats) >> 1); i++) {
-    Serial.print(F(" "));          // Note. The real console has this leading space.
-    Serial.print(statsPtr[i]);
+// Return true if it's a new day. This is local (EST) time, not UTC
+// Used to reset daily rain accumulation
+bool isNewDay()
+{
+  DateTime est = rtc.now();
+  
+  // crude daylight savings adjustment
+  if (est.month() > 3 && est.month() < 11 )
+  { DateTime est =  est + (3600UL * -4L);} // summer
+  else
+  { DateTime est =  est + (3600UL * -5L);} // winter
+  
+  static uint8_t prevDay = est.day();
+  if ( prevDay == est.day())
+  { return false; }
+  else
+  {
+    prevDay = est.day();
+    return true; 
   }
-  Serial.print(F("\n\r"));
-}
+} // end isNewDay()
 
-void cmdSetper() {
-  char *period;
-  period = sCmd.next();
-  if (period != NULL) {
-    byte minutes = strtol(period, NULL, 10);
-    if (minutes != EEPROM.read(EEPROM_ARCHIVE_PERIOD)) {
-      // The console erases the flash chip if the archive period is changed
-      // so that all records in the flash have the same interval.
-      flash.chipErase();
-      EEPROM.write(EEPROM_ARCHIVE_PERIOD, strtol(period, NULL, 10));
-#if 0
-      Serial.print(F("New archive interval = "));
-      Serial.println(EEPROM.read(EEPROM_ARCHIVE_PERIOD));
-#endif
-    }
-    printAck();
-  } else {
-    printNack();
-  }
-}
 
-void cmdStrmoff() {
-  printOk();
-  strmon =  false;
-}
+// Figure out if daylight savings time or not and return EST offset from GMT
+// Summer 4 hours, winter 5 hours
+int estOffset()
+{
+  return -4;
+} // end estOffset()
 
-void cmdStrmon() {
-  printOk();
-  strmon =  true;
-}
 
-void cmdTest() {
-  Serial.print(F("TEST\n"));
-}
-
-void cmdVer() {
-  printOk();
-  Serial.print(F("Sep 29 2009\n\r"));
-}
-
-void cmdWRD() {
-  printAck();
-  Serial.write(16);
-}
-
-// Gettime and Settime use a binary format as follows:
-// seconds - minutes - hours24 - day - month - (year-1900)
-// Example (to set 3:27:00 pm, June 4, 2003):
-// >"SETTIME"<LF>
-// <<ACK>
-// ><0><27><15><4><6><103><2 Bytes<<ACK><2 bytes of CRC>
-// <<ACK>
-void cmdGettime() {
-  byte davisDateTime[6];
-  printAck();
-  DateTime now = RTC.now();
-  davisDateTime[0] = now.second();
-  davisDateTime[1] = now.minute();
-  davisDateTime[2] = now.hour();
-  davisDateTime[3] = now.day();
-  davisDateTime[4] = now.month();
-  davisDateTime[5] = now.year() - 1900;
-#if 0
-  Serial.print(F("The time in reverse Davis format is now"));
-  for (int8_t i = 5; i >= 0; i--) {
-    Serial.print(F(" "));
-    Serial.print(davisDateTime[i]);
-  }
-  Serial.println();
-#endif
-  unsigned int crc = radio.crc16_ccitt(davisDateTime, 6);
-  Serial.write(davisDateTime, 6);
-  Serial.write(highByte(crc));
-  Serial.write(lowByte(crc));
-}
-
-void cmdSettime() {
-  byte davisDateTime[8];
-  printAck();
-  // delay(2000);    Why were these delays here if read() is blocking? Kobuki code bug?
-  // Read six bytes for time and another two bytes for CRC
-  for (byte i = 0; i < 8; i++) {
-    davisDateTime[i] = Serial.read();
-    // delay(200);
-  }
-
-  // Set the time only if the CRC is OK
-  unsigned int crc = radio.crc16_ccitt(davisDateTime, 6);
-  if (crc == (word(davisDateTime[6], davisDateTime[7]))) {
-    printAck();
-    RTC.adjust(DateTime(davisDateTime[5] + 1900, davisDateTime[4], davisDateTime[3], \
-      davisDateTime[2], davisDateTime[1], davisDateTime[0]));
-  } else {
-    printNack();
-  }
-}
-
-void cmdDmpaft() {
-  printAck();
-  // read 2 byte vantageDateStamp, the 2 byte vantageTimeStamp, and a 2 byte CRC
-  while (Serial.available() <= 0);
-  for (byte i = 0; i < 6; i++) Serial.read();
-  printAck();
-
-  // From Davis' docs:
-  //   Each archive record is 52 bytes. Records are sent to the PC in 264 byte pages. Each page
-  //   contains 5 archive records and 4 unused bytes.
-
-  // send the number of "pages" that will be sent (2 bytes), the location within the first page of the first record, and 2 Byte CRC
-  byte response[4] = { 1, 0, 0, 0 }; // L,H;L,H -- 1 page; first record is #0
-  unsigned int crc = radio.crc16_ccitt(response, 4);
-  for (byte i = 0; i < 4; i++)
-    Serial.write(response[i]);
-  Serial.write(highByte(crc));
-  Serial.write(lowByte(crc));
-  while (Serial.available() <= 0);
-  if (Serial.read() != 0x06); // should return if condition is true, but can't get a 0x06 here for the life of me, even if weewx does send it...
-
-  // The format of each page is:
-  // 1 Byte sequence number (starts at 0 and wraps from 255 back to 0)
-  // 52 Byte Data record [5 times]
-  // 4 Byte unused bytes
-  // 2 Byte CRC
-  response[0] = 0;
-  crc = radio.crc16_ccitt(response, 1);
-  Serial.write(0);
-  byte * farp = (byte *)&fakeArchiveRec;
-  for (byte i = 0; i < 5; i++) {
-    crc = radio.crc16_ccitt(farp, sizeof(fakeArchiveRec), crc);
-    for (byte j = 0; j < sizeof(fakeArchiveRec); j++) Serial.write(farp[j]);
-  }
-  for (byte i = 0; i < 4; i++) Serial.write(0);
-  crc = radio.crc16_ccitt(response, 4, crc);
-  Serial.write(highByte(crc));
-  Serial.write(lowByte(crc));
-}
-
-void cmdWake() {
-  Serial.print(F("\n\r"));
-}
-
-// This gets set as the default handler, and gets called when no other command matches.
-void cmdUnrecognized(const char *command) {
-  printOk();
-}
-
-//--- Print related support functions ---//
-void printAck() {
-  Serial.write(0x06);
-}
-
-void printNack() {
-  Serial.write(0x21);
-}
 
 // From http://jeelabs.org/2011/05/22/atmega-memory-use/
-void printFreeRam() {
+void printFreeRam() 
+{
   extern int __heap_start, *__brkval;
   int v;
   Serial.print(F("Free mem: "));
   Serial.println((int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval));
-}
+} // end printFreeRam()
 
-void printOk() {
-  Serial.print(F("\n\rOK\n\r"));
-}
 
-void printStrm() {
-  for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
+// Print the packet contents from Davis ISS
+void printStrm() 
+{
+  for (byte i = 0; i < DAVIS_PACKET_LEN; i++) 
+  {
+    Serial.print("radio.DATA[");
     Serial.print(i);
-    Serial.print(" = ");
+    Serial.print("] = ");
     Serial.print(radio.DATA[i], HEX);
-    Serial.print(F("\n\r"));
+    Serial.println();
   }
-  Serial.print(F("\n\r"));
-}
+  Serial.println();
+} // end printStrm()
 
-//--- Ancillary functions ---//
-void blink(byte PIN, int DELAY_MS)
+
+
+time_t getNtpTime()
 {
-  pinMode(PIN, OUTPUT);
-  digitalWrite(PIN,HIGH);
+  while (Udp.parsePacket() > 0) ; // discard any previously received packets
+  { sendNTPpacket(timeServer); }
+  
+  uint32_t beginWait = millis();
+  while (millis() - beginWait < 1500)
+  {
+    int size = Udp.parsePacket();
+    if (size >= NTP_PACKET_SIZE)
+    {
+      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
+      unsigned long secsSince1900;
+      // convert four bytes starting at location 40 to a long integer. This is NTP time (seconds since Jan 1 1900):
+      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
+      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+      secsSince1900 |= (unsigned long)packetBuffer[43];
+      // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+      const unsigned long seventyYears = 2208988800UL;
+      return secsSince1900 - seventyYears;
+    }
+  }  // end while()
+  
+  return 0; // return 0 if unable to get the time
+}  // end getNtpTime()
+
+
+// send an NTP request to the time server at the given address
+void sendNTPpacket(IPAddress &address)
+{
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12]  = 49;
+  packetBuffer[13]  = 0x4E;
+  packetBuffer[14]  = 49;
+  packetBuffer[15]  = 52;
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  Udp.beginPacket(address, 123); //NTP requests are to port 123
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  Udp.endPacket();
+} // end sendNTPpacket()
+
+
+// Blink LED
+void blink(byte pin, int DELAY_MS)
+{
+  digitalWrite(pin, HIGH);
   delay(DELAY_MS);
-  digitalWrite(PIN,LOW);
-}
+  digitalWrite(pin, LOW);
+} // end blink()
 
-// Super ugly. Wanted to get this working but running out of time.  Make pretty later.
-// This enables an interrupt every minute.  We will use this for reading sensors on the
-// minute and enabling the archiving on multiples of a minute.
-void setAlarming()
+// Reboot
+void softReset()
 {
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_CONTROL));
-  Wire.endTransmission();
-
-  // control register
-  Wire.requestFrom(DS3231_ADDRESS, 1);
-  uint8_t creg = Wire.read();     //do we need the bcd2bin
-
-  creg &= ~0b00000001; // Clear INTCN and A1IE to enable alarm interrupt but disable Alarm1
-  creg |=  0b00000110; // Set A2IE to enable Alarm2
-
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_CONTROL));
-  Wire.write(static_cast<uint8_t>(creg));
-  Wire.endTransmission();
-
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_A2DAYDATE));
-  Wire.write(static_cast<uint8_t>(0b10000000));
-  Wire.endTransmission();
-
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_A2HOURS));
-  Wire.write(static_cast<uint8_t>(0b10000000));
-  Wire.endTransmission();
-
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_A2MINUTES));
-  Wire.write(static_cast<uint8_t>(0b10000000));
-  Wire.endTransmission();
+  asm volatile ("  jmp 0");
 }
 
-void clearAlarmInterrupt()
+// srg - so you can see what URL will look like
+// You should be able to past it right in browser and update the PWS station
+void printURL()
 {
-  oneMinutePassed = false;
-  Wire.beginTransmission(DS3231_ADDRESS);
-  Wire.write(static_cast<uint8_t>(DS3231_REG_STATUS_CTL));
-  Wire.write(static_cast<uint8_t>(0b00000000));
-  Wire.endTransmission();
-}
+   // Get time stamp
+  char dateutc[25]; // holds UTC Time
+  getUtcTime(dateutc);  
+  
+  Serial.print("\nhttp://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?ID=");
+  Serial.print(WUNDERGROUND_STATION_ID);
+  Serial.print("&PASSWORD=");
+  Serial.print(WUNDERGROUND_PWD);
+  Serial.print("&dateutc=");
+  Serial.print(dateutc);
+  Serial.print("&winddir=");
+  Serial.print(loopData.windDirection);
+  Serial.print("&windspeedmph=");
+  Serial.print(loopData.windSpeed);
+  Serial.print("&windgustmph=");
+  Serial.print(windgustmph);
+  Serial.print("&tempf=");
+  Serial.print((float)loopData.outsideTemperature / 10.0);
+  Serial.print("&rainin=");
+  Serial.print((float)loopData.rainRate / 100.0);  // rain inches over the past hour
+  Serial.print("&dailyrainin=");   // rain inches so far today in local time
+  Serial.print((float)loopData.dayRain / 100.0);  //
+  Serial.print("&baromin=");
+  Serial.print((float)loopData.barometer / 1000.0);
+  Serial.print("&dewptf=");
+  Serial.print(dewpoint);
+  Serial.print("&humidity=");
+  Serial.print(loopData.outsideHumidity);
+  Serial.print("&softwaretype=Arduino%20Moteino%20v1.00");
+  Serial.print("&action=updateraw");
+  
+  Serial.println();
+  
+} // end printURL()
+
+
