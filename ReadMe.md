@@ -1,3 +1,5 @@
+<h2>************* STILL DEBUGGING *************</h2>
+
 This project received Davis VantagePro wireless weather station data and sends to to Weather Underground's personal weather station (PWS).
 
 Hardware:
