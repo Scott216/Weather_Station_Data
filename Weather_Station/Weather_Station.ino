@@ -4,64 +4,37 @@ To Do:
 Add additional time servers in case one or two fail
 
 
-Uses Moteino R4
-Pinout: http://farm4.staticflickr.com/3818/10585364014_d028c66523_o.png
-MoteinoHardware files: http://github.com/LowPowerLab/Moteino
-Moteino Forum: https://lowpowerlab.com/forum/
-Davis Serial Communication Reference Manual: http://www.davisnet.com/support/weather/downloads/software_dllsdk.asp
-Ethernet library where you can choose SS pin: http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862 
 
-
-Rain calculation:
-I think the way rain works is every time the the bucket tips, the byte counts up. It stays there at that value until it tips again.  When it reaches 255 it goes back to zero
 References: http://madscientistlabs.blogspot.ca/2012/05/here-comes-rain.html
             http://www.wxforum.net/index.php?topic=22082.msg212375#msg212375
             http://www.wxforum.net/index.php?topic=21550.new;topicseen#new - Arduino Uno weather station        
  
-
-Uses of the DavisRFM69 library to sniff the packets from a Davis Instruments
-wireless Integrated Sensor Suite (ISS), demostrating compatibility between the RFM69
-and the TI CC1020 transmitter used in that hardware. 
-See http://madscientistlabs.blogspot.com/2014/02/build-your-own-davis-weather-station_17.html
-
-This is part of the DavisRFM69 library from https://github.com/dekay/DavisRFM69
-(C) DeKay 2014 dekaymail@gmail.com
-Example released under the MIT License (http://opensource.org/licenses/mit-license.php)
-
-
-Weather Underground upload info
-http://wiki.wunderground.com/index.php/PWS_-_Upload_Protocol
-Sample ULR
-http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?ID=KCASANFR5&PASSWORD=XXXXXX&dateutc=2000-01-01+10%3A32%3A35&winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90&weather=&clouds=&softwaretype=vws%20versionxx&action=updateraw
 Test PWS: http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
 
-
-Sketch was locking up because of intrrupts the radio was executing during an Ethernet connection. 
-Fixed it by modifying w5100.cpp.  Turned off intrupts in setSS() and turned back on in restSS()
-Found that solution here: http://harizanov.com/2012/04/rfm12b-and-arduino-ethernet-with-wiznet5100-chip/
-
+Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
 Pins:
 A4 SDA 
 A5 SCL
-D5 - Red LED
-D6 - Green LED
+A0 - Rx Good LED (green)
+A1 - Rx Bad LED (red)
+D2 - Tx Good LED (green)
 D7 - Slave select - on v2 of PCB
 D8 - SS for flash (not used in this project)
-D9  PCB Led
+D9  Moteino PCB Led
 D10 Slave select for RFM69
 D11-13 - used for SPI
 
 Change log:
- 
+07/23/14 v0.12 - fixed isNewDay bug.  Averaged wind data and increased wind gust period to 5 minutes.  
+07/24/14 v0.13 - Changed rainRate calculation, looks at 5 minutes instead on an hour, added station ID check
 
 */
 
-#define VERSION "v0.11"  // version of this program
-
+#define VERSION "v0.13"  // version of this program
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
-#include <Ethernet.h>          // Modified for user selectable SS pin  http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
+#include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
 #include <EthernetUdp.h>
 #include <SPI.h>               // DavisRFM69.h needs this   http://arduino.cc/en/Reference/SPI
 #include <Wire.h>
@@ -69,6 +42,7 @@ Change log:
 #include <Adafruit_BMP085_U.h> // http://github.com/adafruit/Adafruit_BMP085_Unified
 #include <Adafruit_Sensor.h>   // http://github.com/adafruit/Adafruit_Sensor
 #include "Tokens.h"            // Holds Weather Underground password
+
 
 // Reduce number of bogus compiler warnings
 // See: http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
@@ -79,10 +53,11 @@ Change log:
   typedef unsigned long time_t;
 #endif
 
-#define PRINT_DEBUG
+#define PRINT_DEBUG  // comment out to remove many of the Serial.print statements
 
 // Header bytes from ISS (weather station tx) that determine what measurement is being sent
-// Valid values are: 40 50 60 80 90 A0 e0
+// Valid hex values are: 40 50 60 80 90 A0 E0
+// Don't know what 0x50 and 0x90 are for
 // See http://github.com/dekay/im-me/blob/master/pocketwx/src/protocol.txt and bit.ly/1kDsXK4   
 #define ISS_OUTSIDE_TEMP 0x80
 #define ISS_HUMIDITY     0xA0
@@ -92,7 +67,7 @@ Change log:
 
 #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
 char SERVER [] = "weatherstation.wunderground.com";  // standard server
-//char SERVER[] = "rtupdate.wunderground.com";           // Realtime update server
+//char SERVER[] = "rtupdate.wunderground.com";       // Realtime update server.  Daily rain doesn't work with this server
 
 
 // Ethernet and time server setup
@@ -103,37 +78,45 @@ IPAddress timeServer( 132, 163, 4, 101 );    // ntp1.nl.net NTP server
 const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
 byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
 
-byte moteinoMac[] = { 0xDE, 0xAD, 0xBE, 0xAA, 0xAB, 0xA4 };
-IPAddress moteinoIp( 192, 168, 46, 131 );
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xAA, 0xAB, 0xA4 };
+IPAddress ip( 192, 168, 46, 131 );
 
 EthernetClient client;
 EthernetUDP Udp;          // UDP for the time server
 
-// Weather data that's not in LoopPacket in DavidRFM69.cpp
-byte rainCounter = 0;           // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 255 then rolls over to zero
-byte windgustmph = 0;           // Wind in MPH
-float dewpoint = 0.0;           // Dewpoint F
-uint16_t dayRain = 0;           // Accumulated rain for the day
-uint16_t rainRate = 0;          // Rain rate as number of rain clicks per hour (e.g 256 = 2.56 in/hr)
-int16_t insideTemperature = 0;  // Inside temperature in tenths of degrees
-int16_t outsideTemperature;     // Outside temperature in tenths of degrees
-uint16_t barometer = 0;         // Current barometer in Hg / 1000
-byte outsideHumidity;           // Outside relative humidity in %.
-byte windSpeed;                 // Wind speed in miles per hour
-uint16_t windDirection;         // Wind direction from 1 to 360 degrees (0 = no wind data)
-byte transmitterBatteryStatus;  // Transmitter battery status, 0=ok, 1=low
-const byte RX_BAD = 4;  // srg check against schematic
-const byte RX_OK = A2;
-const byte TX_OK = A1;
+// Weather data to send to Weather Underground
+byte rainCounter = 0;            // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 255 then rolls over to zero
+byte windgustmph = 0;            // Wind in MPH
+float dewpoint = 0.0;            // Dewpoint F
+uint16_t dayRain = 0;            // Accumulated rain for the day in 1/100 inch
+uint16_t rainRate = 0;           // Rain rate as number of rain clicks (1/100 inch) per hour (e.g 256 = 2.56 in/hr)
+int16_t insideTemperature =  0;  // Inside temperature in tenths of degrees
+int16_t outsideTemperature = 0;  // Outside temperature in tenths of degrees
+uint16_t barometer = 0;          // Current barometer in inches mercury * 1000
+byte outsideHumidity = 0;        // Outside relative humidity in %.
+byte windSpeed = 0;              // Wind speed in miles per hour
+uint16_t windDirection = 0;      // Wind direction from 1 to 360 degrees (0 = no wind data)
+
+// I/O pins
+const byte RX_BAD = A1; 
+const byte RX_OK = A0;
+const byte TX_OK = 2;
 const byte MOTEINO_LED = 8;  // Change to pin 9 in v2
 const byte ETH_SS_PIN =  9;  // Ethernet slave select pin, chage to pin 7 in v2
 
+// ISS station ID to be monitored
+const byte TRANSMITTER_STATION_ID = 1; 
+
 uint32_t timestampRxGoodPacket = 0; // timestamp of last good packet Moteino received
+
+// Used to track first couple of rain readings so initial rain counter can be set
 enum rainReading_t { NO_READING, FIRST_READING, AFTER_FIRST_READING };
 rainReading_t initialRainReading = NO_READING;  // Need to know when very first rain counter reading comes so inital calculation is correct  
-bool gotInitialWeatherData = false; // flag to indicate when weather data is first received.  Used to prevent zeros from being uploaded to Weather Underground upon startup
 
+// flag to indicate when weather data is first received.  Used to prevent zeros from being uploaded to Weather Underground upon startup
+bool gotInitialWeatherData = false; 
 
+// Instantiate class objects
 DavisRFM69 radio;
 RTC_Millis rtc;  // software clock
 Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085); // Barometric pressure sensor, uses I2C. http://www.adafruit.com/products/1603
@@ -143,12 +126,13 @@ bool getWirelessData();
 void processPacket();
 bool uploadWeatherData();
 void updateRainAccum();
-void updateWindGusts();
+void updateWind(byte currentWindSpeedMph, uint16_t wind_direction);
 bool updateBaromoter();
 bool updateInsideTemp();
 float dewPointFast(float tempF, byte humidity);
 float dewPoint(float tempf, byte humidity);
 void printFreeRam();
+void printStrm();
 void blink(byte PIN, int DELAY_MS);
 void getUtcTime(char timebuf[]);
 bool isNewMinute();
@@ -170,7 +154,7 @@ void setup()
   pinMode(RX_BAD,      OUTPUT);
   pinMode(TX_OK,       OUTPUT);
 
-  // Flash LEDs
+  // Flash all LEDs
   for (int i = 0; i < 6; i++)
   {
     digitalWrite(MOTEINO_LED, !digitalRead(MOTEINO_LED));
@@ -182,17 +166,17 @@ void setup()
       
   // Setup Ethernet
   Ethernet.select(ETH_SS_PIN);  // Set slave select pin - requires modified Ethernet.h library
-// Ethernet.begin(moteinoMac, moteinoIp);  // This uses less memory but isn't working with WIZ811MJ; works fine with Ethernet shield
-  Ethernet.begin(moteinoMac);  
+// Ethernet.begin(mac, ip);  // This uses less memory but isn't working with WIZ811MJ; works fine with Ethernet shield
+  Ethernet.begin(mac);  
   Serial.println(Ethernet.localIP());
-  Udp.begin(8888);  // local port 8888 to listen for UDP packet
+  Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
   
   // Get time from NTP server
   time_t t = getNtpTime();
   if ( t != 0 )
   { 
     rtc.begin(DateTime(t));
-    DateTime now = rtc.now();
+//    DateTime now = rtc.now();
   }
   #ifdef PRINT_DEBUG
   else
@@ -201,17 +185,24 @@ void setup()
   
   // Set up BMP085 pressure and temperature sensor
   if (!bmp.begin())
-  { Serial.println(F("Could not find BMP180")); }
+  { 
+    #ifdef PRINT_DEBUG
+      Serial.println(F("Could not find BMP180")); 
+    #endif
+  }
 
   // Setup Moteino radio
   radio.initialize();
   radio.setChannel(0);      // Frequency / Channel is *not* set in the initialization. Do it right after.
 
-  Serial.print(F("Weather Station "));
+  Serial.print("Weather Station ");
   Serial.println(VERSION);
 
-  printFreeRam();
-
+  #ifdef PRINT_DEBUG
+    printFreeRam();
+    Serial.println();
+  #endif
+  
 }  // end setup()
 
 
@@ -221,10 +212,8 @@ void loop()
   DateTime now = rtc.now();
   
   getWirelessData();
-  updateRainAccum();
-  updateWindGusts();
   
-/*
+/*  // dummy data for tesing
   static byte windDir = 0;
   windDir++;
   // create dummy data
@@ -236,11 +225,11 @@ void loop()
   insideTemperature = 7550;
   rainRate = 30;
   dayRain = 0;
+  barometer = 29984; 
 */
 
-  barometer = 30000;  //srg test data
   
-  // Send data to Weather Underground
+  // Send data to Weather Underground PWS
   bool isTimeToUpload = (long)(millis() - uploadTimer) > 0;
   bool haveFreshWeatherData = ( (long)(millis() - timestampRxGoodPacket) < 60000 );  // Received good packets within the last 60 seconds 
   bool isNptTimeOk = (now.year() >= 2014);
@@ -248,11 +237,11 @@ void loop()
   {
     // Get date that's not from outside weather station
     dewpoint = dewPoint( (float)outsideTemperature/10.0, outsideHumidity);
-    // updateBaromoter();
+    // updateBaromoter();  //srg - check conversion 
     // updateInsideTemp();
 
     uploadWeatherData();
-    uploadTimer = millis() + 10000; // upload again in 10 seconds
+    uploadTimer = millis() + 20000; // upload again in 10 seconds
     printURL();
   }
   
@@ -345,34 +334,41 @@ void processPacket()
   static bool gotHumidityData = false; 
   static bool gotRainData = false; 
 
-  // Every packet has wind speed, direction and battery status in it
-  windSpeed = radio.DATA[1];
+  // station ID - the low order three bits are the station ID.  Station ID 1 is 0 in this data
+  byte stationId = (radio.DATA[0] & 0x07) + 1;
+  if ( stationId != TRANSMITTER_STATION_ID )
+  { return; }  // exit function if this isn't the station ID program is monitoring
+
+  // Every packet has wind speed, wind direction and battery status in it
+  byte windMPH = radio.DATA[1];
   #ifdef PRINT_DEBUG
-    Serial.print("Wind Speed: ");
-    Serial.println(windSpeed);
+    Serial.print(F("Wind Speed: "));
+    Serial.println(windMPH);
   #endif
 
   // There is a dead zone on the wind vane. No values are reported between 8
   // and 352 degrees inclusive. These values correspond to received byte
   // values of 1 and 255 respectively
   // See http://www.wxforum.net/index.php?topic=21967.50
-  windDirection = 9 + radio.DATA[2] * 342.0f / 255.0f;
+  uint16_t windDir = 9 + radio.DATA[2] * 342.0f / 255.0f;
   #ifdef PRINT_DEBUG
     Serial.print(F("Wind Direction: "));
-    Serial.println(windDirection);
+    Serial.println(windDir);
   #endif
+
+  // update variables tracking wind. 
+  updateWind(windMPH, windDir);
   
-  // 0 = battery ok, 1 = battery low
-  transmitterBatteryStatus = (radio.DATA[0] & 0x8) >> 3;
+  // 0 = battery ok, 1 = battery low.  Not used by anything in program
+  byte transmitterBatteryStatus = (radio.DATA[0] & 0x8) >> 3; 
   
-  // Now look at each individual packet. Mask off the four low order bits. The highest order bit of the
-  // four is set high when the ISS battery is low.  The low order three bits are the station ID.
+  // Mask off the four low order bits to see what type of data is being sent
   switch (radio.DATA[0] & 0xf0) 
   {
 
   case ISS_OUTSIDE_TEMP:
     outsideTemperature = (int16_t)(word(radio.DATA[3], radio.DATA[4])) >> 4;
-    gotTempData = true; 
+    gotTempData = true;  // one-time flag when data first arrives.  Used to track when all the data has arrived and can be sent to PWS  
     #ifdef PRINT_DEBUG
       Serial.print(F("Outside Temp: "));
       Serial.println(outsideTemperature);
@@ -382,9 +378,9 @@ void processPacket()
   case ISS_HUMIDITY:
     // Round humidity to nearest integer
     outsideHumidity = (byte) ( (float)( word((radio.DATA[4] >> 4), radio.DATA[3]) ) / 10.0 + 0.5 );
-    gotHumidityData = true;
+    gotHumidityData = true;  // one-time flag when data first arrives
     #ifdef PRINT_DEBUG
-      Serial.print("Humidity: ");
+      Serial.print(F("Humidity: "));
       Serial.println(outsideHumidity);
     #endif
     break;
@@ -395,34 +391,38 @@ void processPacket()
     { initialRainReading = FIRST_READING; } // got first rain reading
     else if ( initialRainReading == FIRST_READING )
     { initialRainReading = AFTER_FIRST_READING; } // already had first reading, now it's everything after the first time
-    gotRainData = true; 
+    gotRainData = true;   // one-time flag when data first arrives
+    updateRainAccum();
     #ifdef PRINT_DEBUG
-      Serial.print("Rain Cnt: ");
+      Serial.print(F("Rain Cnt: "));
       Serial.println(rainCounter);
     #endif
     break;
 
-   case ISS_SOLAR_RAD:
-   // future  use
+  case ISS_SOLAR_RAD:
+    #ifdef PRINT_DEBUG
+      Serial.print(F("Solar: "));
+      printStrm();
+    #endif
     break;
      
-   case ISS_UV_INDEX:
-     // future use
+  case ISS_UV_INDEX:
+    #ifdef PRINT_DEBUG
+      Serial.print(F("UV Index: "));
+      printStrm();
+    #endif
     break;
 
-    default:
+  default:
     #ifdef PRINT_DEBUG
-      Serial.print("Other header: 0x");
-      Serial.print(radio.DATA[0] & 0xf0, HEX);
-      Serial.print(F("  Byte 3: 0x"));
-      Serial.print(radio.DATA[3], HEX);
-      Serial.print(F("  Byte 4: 0x"));
-      Serial.println(radio.DATA[4], HEX);
+      Serial.print(F("Other header: "));
+      printStrm();
     #endif
     break; 
   }
   
   // See if all weather data has been received
+  // If so, program can start uploading to Weather Underground PWS
   if ( gotTempData && gotHumidityData && gotRainData )
   { gotInitialWeatherData = true; }
   
@@ -451,7 +451,7 @@ bool uploadWeatherData()
     client.print(windSpeed);
     client.print("&windgustmph=");
     client.print(windgustmph);
-    if ( outsideTemperature < 1300 && outsideTemperature > -400 )  // temp must be between -40 F and 130 F
+    if ( outsideTemperature > -400 && outsideTemperature < 1300 )  // temp must be between -40 F and 130 F
     {
       client.print("&tempf=");
       client.print((float)outsideTemperature / 10.0);
@@ -461,11 +461,8 @@ bool uploadWeatherData()
       client.print("&indoortempf=");
       client.print((float)insideTemperature / 10.0);
     }
-    if ( rainRate < 3500 )  // rain must be less then 3.5 inch per hour
-    {
-      client.print("&rainin=");
-      client.print((float)rainRate / 100.0);  // rain inches over the past hour
-    }
+    client.print("&rainin=");
+    client.print((float)rainRate / 100.0);  // rain inches over the past hour
     client.print("&dailyrainin=");   // rain inches so far today in local time
     client.print((float)dayRain / 100.0);  //
     if ( barometer > 20000L && barometer < 40000L )
@@ -480,7 +477,7 @@ bool uploadWeatherData()
       client.print("&humidity=");
       client.print(outsideHumidity);
     }
-    client.print("&softwaretype=Arduino%20Moteino%20");
+    client.print("&softwaretype=Arduino%20Moteino");
     client.print(VERSION);
     client.print("&action=updateraw");
     client.println();
@@ -527,100 +524,121 @@ bool uploadWeatherData()
 } // end uploadWeatherData()
 
 
-// Updates loopData.rainRate - rain in past 60 minutes
-//         loopData.dayRain - rain today (local time)
+// Once a minuts calculates rain rain in inches per hour
+// by looking at the rain for the last 5 minutes, and multiply by 12
+// Also track rain accumulation for the day.  Reset at midnight (local time, not UDT time)
 // Everything is in 0.01" units of rain
 void updateRainAccum()
 {
-  static uint8_t rainEachMinute[60]; // array holds incremental rain for each minute of the hour
-  static uint8_t prevRainCnt = 0;    // rain count (not incremental) from previous minute
-  
   // For the first time program receives the rain counter value, we need 
   // to set the prevRainCnt to match so we don't count the starting point as rain that came in on this minute 
-  if ( initialRainReading == NO_READING )
-  { return; }     // no reading yet, exit the function
-  else if  ( initialRainReading == FIRST_READING )
-  { prevRainCnt = rainCounter; }
+  static byte prevRainCounter = 0;    // rain count (not incremental) from previous minute
   
+  // If program is bootingup, set previous rain counter to current counter so it's not counting rain that not real
+  if ( initialRainReading == FIRST_READING )
+  { prevRainCounter = rainCounter; }
+  
+  static byte rainEachMinute[5];  // array holds incremental rain for a 5 minute period
+  static byte minuteIndex = 0;    // index for rainEachMinute
   if ( isNewMinute() )
   {
-    DateTime now = rtc.now();
-    uint8_t newMinute = now.minute();
-    
     // Calculate new rain since since the last minute
-    int newRain; // incremental new rain since last minute
-    if ( rainCounter < prevRainCnt )
-    { newRain = (256 - prevRainCnt) + rainCounter; } // counter has rolled over
+    byte newRain = 0; // incremental new rain since last minute
+    if ( rainCounter < prevRainCounter )
+    { newRain = (256 - prevRainCounter) + rainCounter; } // variable has rolled over
     else
-    { newRain = rainCounter - prevRainCnt; }
+    { newRain = rainCounter - prevRainCounter; }
     
-    // add new rain and remove rain from an hour ago
-    rainRate = rainRate + newRain - rainEachMinute[newMinute];
+    rainEachMinute[minuteIndex++] = newRain;
+    if ( minuteIndex == 5 )
+    { minuteIndex = 0; }
     
-    rainEachMinute[newMinute] = newRain;  // Update array with latest rain amount
-    prevRainCnt = rainCounter;
+    // calculate hourly rain rate
+    uint16_t sumRain = 0;
+    for (byte i = 0; i < 5; i++)
+    { sumRain += rainEachMinute[i]; }
+    rainRate = sumRain * 12;
+    
+    prevRainCounter = rainCounter;
     
     // Increment daily rain counter
     dayRain += newRain;
   }
   
   // reset daily rain accumulation
-  if ( isNewDay() );
+  if ( isNewDay() )
   { dayRain = 0; }
   
 } // end updateRainAccum()
 
 
-// Update wind gust calculation
-// Weather Underground wind variables.  Sketch only uses: winddir, windspeedmph, windgustmph
-// winddir - [0-360 instantaneous wind direction]
-//    windspeedmph - [mph instantaneous wind speed]
-//    windgustmph - [mph current wind gust, using software specific time period]
+// Update wind data
+// Below are all the Weather Underground wind variables.  This program only uses: winddir, windspeedmph, windgustmph
+// windgustmph is over 5 minutes, then resets to current wind speed 
+// winddir and windspeedmph are averages of the last 10 readings
+// *  winddir - [0-360 instantaneous wind direction]
+// *  windspeedmph - [mph instantaneous wind speed]
+// *  windgustmph - [mph current wind gust, using software specific time period]
 //    windgustdir - [0-360 using software specific time period]
 //    windspdmph_avg2m  - [mph 2 minute average wind speed mph]
 //    winddir_avg2m - [0-360 2 minute average wind direction]
 //    windgustmph_10m - [mph past 10 minutes wind gust mph ]
 //    windgustdir_10m - [0-360 past 10 minutes wind gust direction]
-void updateWindGusts()
+void updateWind( byte currentWindSpeedMph, uint16_t windDir )
 {
-  const uint32_t TWO_MINUTES = 120000;
-  static uint32_t windGustTmr2min = 0;  // two minute wind gust timer.
+  const uint32_t FIVE_MINUTES = 600000;
+  static uint32_t timer_Wind_Gust = 0;  // 5 minute wind gust timer.
   
-  if ( (long)(millis() - windGustTmr2min) > 0 )
+  if ( (long)(millis() - timer_Wind_Gust) > 0 )
   {
-    windgustmph = windSpeed;  // reset wind gust
-    windGustTmr2min = millis() + TWO_MINUTES;
+    windgustmph = currentWindSpeedMph;  // reset wind gust
+    timer_Wind_Gust = millis() + FIVE_MINUTES;
   }
   else
   {
-    if ( windSpeed > windgustmph )
-    { windgustmph = windSpeed; }
+    if ( currentWindSpeedMph > windgustmph )
+    { windgustmph = currentWindSpeedMph; }
   }
 
-}  // end updateWindGusts()
+  // For for wind speed and direction calculation, take the average of the last 10 radings
+  const byte NUM_WIND_READINGS = 10;
+  static byte   windSpeedData[NUM_WIND_READINGS];
+  static uint16_t windDirData[NUM_WIND_READINGS];
+  static byte index = 0;
+  
+  windDirData[index] = windDir;
+  windSpeedData[index++] = currentWindSpeedMph;
+  if ( index >= NUM_WIND_READINGS )
+  { index = 0; }
+  
+  float sumWind =      0.0;
+  float sumDirection = 0.0;
+  for ( byte i = 0; i < NUM_WIND_READINGS; i++ )
+  { 
+    sumWind +=      windSpeedData[i]; 
+    sumDirection += windDirData[i];
+  }
+  windSpeed =     ( sumWind      / (float)NUM_WIND_READINGS ) + 0.5;  // 0.5 is for rounding
+  windDirection = ( sumDirection / (float)NUM_WIND_READINGS ) + 0.5;
+  
+}  // end updateWind()
 
 
 // Get pressure reading from baromoter - located inside, not outside on weather station
 // Barometric pressure is read once per minute
-// Units from the BMP085 are Pa.  Need to convert to thousandths of inches of Hg.
+// Units from the BMP180 are Pa.  Need to convert to thousandths of inches of Hg.
 bool updateBaromoter()
 {
-
   sensors_event_t event;
   bmp.getEvent(&event);
   
   if (event.pressure)
   {
-    barometer = event.pressure;
+    barometer = (float) event.pressure * 29.53 ;  // convert hPa to inches of mercury * 1000
     return true;
   }
   else
-  {
-    #ifdef PRINT_DEBUT
-      Serial.println(F("Barometric sensor error"));
-    #endif
-    return false;
-  }
+  { return false; }
  
 } // end updateBaromoter()
 
@@ -691,7 +709,7 @@ void getUtcTime(char timebuf[])
     else
     {
       #ifdef PRINT_DEBUG
-        Serial.println("NTP Update failed");
+        Serial.println(F("NTP Update failed"));
      #endif
     }
   }
@@ -726,12 +744,12 @@ bool isNewDay()
   
   // crude daylight savings adjustment
   if (est.month() > 3 && est.month() < 11 )
-  { DateTime est =  est + (3600UL * -4L);} // summer
+  { est = est + (3600UL * -4L);} // summer
   else
-  { DateTime est =  est + (3600UL * -5L);} // winter
-  
+  { est = est + (3600UL * -5L);} // winter
+
   static uint8_t prevDay = est.day();
-  if ( prevDay == est.day())
+  if ( prevDay == est.day() )
   { return false; }
   else
   {
@@ -826,49 +844,67 @@ void softReset()
   asm volatile ("  jmp 0");
 }
 
+// print whole data packet
+void printStrm() 
+{
+  for (byte i = 0; i < DAVIS_PACKET_LEN; i++) 
+  {
+    Serial.print(radio.DATA[i], HEX);
+    Serial.print(F(" "));
+  }
+  Serial.println();
+} // end printStrmIO
+
+
 // prints same data that sent to the wunderground
 void printURL()
 {
-   // Get time stamp
-  char dateutc[25]; // holds UTC Time
-  getUtcTime(dateutc);  
+  #ifdef PRINT_DEBUG
+     // Get time stamp
+    char dateutc[25]; // holds UTC Time
+    getUtcTime(dateutc);  
   
 //    Serial.print(F("GET /weatherstation/updateweatherstation.php?ID="));
 //    Serial.print(WUNDERGROUND_STATION_ID);
-//    Serial.print("&PASSWORD=");
+//    Serial.print(F("&PASSWORD="));
 //    Serial.print(WUNDERGROUND_PWD);
-    Serial.print("&dateutc=");
+    Serial.print(F("&dateutc="));
     Serial.print(dateutc);
-    Serial.print("&winddir=");
+    Serial.print(F("&winddir="));
     Serial.print(windDirection);
-    Serial.print("&windspeedmph=");
+    Serial.print(F("&windspeedmph="));
     Serial.print(windSpeed);
-    Serial.print("&windgustmph=");
+    Serial.print(F("&windgustmph="));
     Serial.print(windgustmph);
-    Serial.print("&tempf=");
-    Serial.print((float)outsideTemperature / 10.0);
+    if ( outsideTemperature > -400 && outsideTemperature < 1300 )  // temp must be between -40 F and 130 F
+    {
+      Serial.print(F("&tempf="));
+      Serial.print((float)outsideTemperature / 10.0);
+    }
     if ( insideTemperature > 350 )  // remember temp is in 1/10 degrees
     {
-      Serial.print("&indoortempf=");
+      Serial.print(F("&indoortempf="));
       Serial.print((float)insideTemperature / 10.0);
     }
-    Serial.print("&rainin=");
+    Serial.print(F("&rainin="));
     Serial.print((float)rainRate / 100.0);  // rain inches over the past hour
-    Serial.print("&dailyrainin=");   // rain inches so far today in local time
+    Serial.print(F("&dailyrainin="));   // rain inches so far today in local time
     Serial.print((float)dayRain / 100.0);  //
-    Serial.print("&baromin=");
-    Serial.print((float)barometer / 1000.0);
-    Serial.print("&dewptf=");
+    if ( barometer > 20000L && barometer < 40000L )
+    {
+      Serial.print(F("&baromin="));
+      Serial.print((float)barometer / 1000.0);
+    }
+    Serial.print(F("&dewptf="));
     Serial.print(dewpoint);
-    Serial.print("&humidity=");
+    Serial.print(F("&humidity="));
     Serial.print(outsideHumidity);
 //    Serial.print(F("&softwaretype=Arduino%20Moteino%20"));
 //    Serial.print(VERSION);
 //    Serial.print(F("&action=updateraw"));
     Serial.println();
-  
-  Serial.println();
-  
+    Serial.println();
+  #endif
 } // end printURL()
 
 
