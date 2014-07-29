@@ -23,9 +23,10 @@ Change log:
 07/24/14 v0.13 - Changed rainRate calculation, looks at 5 minutes instead on an hour, added station ID check
 07/25/14 v0.14 - Enabled BPM180 for pressure and inside temp
 07/28/14 v0.15 - Moved Tx Ok LED from D2 to D3.  D2 is used by transciever
+07/29/14 v0.16 - Formatting changes,  removed printURL(), removed estOffset()
 */
 
-#define VERSION "v0.15"  // version of this program
+#define VERSION "v0.16"  // version of this program
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -78,17 +79,17 @@ EthernetClient client;
 EthernetUDP Udp;          // UDP for the time server
 
 // Weather data to send to Weather Underground
-byte rainCounter = 0;            // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 255 then rolls over to zero
-byte windgustmph = 0;            // Wind in MPH
-float dewpoint = 0.0;            // Dewpoint F
-uint16_t dayRain = 0;            // Accumulated rain for the day in 1/100 inch
-uint16_t rainRate = 0;           // Rain rate as number of rain clicks (1/100 inch) per hour (e.g 256 = 2.56 in/hr)
-float insideTemperature =  0;  // Inside temperature in tenths of degrees
+byte rainCounter =           0;  // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 255 then rolls over to zero
+byte windgustmph =           0;  // Wind in MPH
+float dewpoint =           0.0;  // Dewpoint F
+uint16_t dayRain =           0;  // Accumulated rain for the day in 1/100 inch
+uint16_t rainRate =          0;  // Rain rate as number of rain clicks (1/100 inch) per hour (e.g 256 = 2.56 in/hr)
+float insideTemperature =    0;  // Inside temperature in tenths of degrees
 int16_t outsideTemperature = 0;  // Outside temperature in tenths of degrees
-uint16_t barometer = 0;          // Current barometer in inches mercury * 1000
-byte outsideHumidity = 0;        // Outside relative humidity in %.
-byte windSpeed = 0;              // Wind speed in miles per hour
-uint16_t windDirection = 0;      // Wind direction from 1 to 360 degrees (0 = no wind data)
+uint16_t barometer =         0;  // Current barometer in inches mercury * 1000
+byte outsideHumidity =       0;  // Outside relative humidity in %.
+byte windSpeed =             0;  // Wind speed in miles per hour
+uint16_t windDirection =     0;  // Wind direction from 1 to 360 degrees (0 = no wind data)
 
 // I/O pins
 const byte RX_OK =      A0;  // LED flashes green every time Moteino receives a good packet
@@ -130,14 +131,11 @@ void blink(byte PIN, int DELAY_MS);
 void getUtcTime(char timebuf[]);
 bool isNewMinute();
 bool isNewDay();
-int estOffset();
-void printURL();
 time_t getNtpTime();
 void sendNTPpacket(IPAddress &address);
 void softReset();
 
-//=============================================================================
-//=============================================================================
+
 void setup() 
 {
   Serial.begin(9600);
@@ -166,10 +164,8 @@ void setup()
   // Get time from NTP server
   time_t t = getNtpTime();
   if ( t != 0 )
-  { 
-    rtc.begin(DateTime(t));
-//    DateTime now = rtc.now();
-  }
+  { rtc.begin(DateTime(t)); }
+ 
   #ifdef PRINT_DEBUG
   else
   { Serial.println(F("Did not get NTP time")); }
@@ -235,10 +231,9 @@ void loop()
 
     uploadWeatherData();
     uploadTimer = millis() + 20000; // upload again in 10 seconds
-    printURL();
   }
   
-  // Reboot if millis is close to rollover. RTC_Millis won't work properly if millis rolls over.  Takes about 49 days
+  // Reboot if millis is close to rollover. RTC_Millis won't work properly if millis rolls over.  Takes 49 days
   if( millis() > 4294000000UL )
   { softReset(); }
   
@@ -750,16 +745,7 @@ bool isNewDay()
 } // end isNewDay()
 
 
-// Figure out if daylight savings time or not and return EST offset from GMT
-// Summer 4 hours, winter 5 hours
-int estOffset()
-{
-  return -4;
-} // end estOffset()
 
-
-
-// From http://jeelabs.org/2011/05/22/atmega-memory-use/
 void printFreeRam() 
 {
   extern int __heap_start, *__brkval;
@@ -833,7 +819,7 @@ void blink(byte pin, int DELAY_MS)
 void softReset()
 {
   asm volatile ("  jmp 0");
-}
+}  // end softReset()
 
 // print whole data packet
 void printStrm() 
@@ -846,56 +832,5 @@ void printStrm()
   Serial.println();
 } // end printStrmIO
 
-
-// prints same data that sent to the wunderground
-void printURL()
-{
-  #ifdef PRINT_DEBUG
-     // Get time stamp
-    char dateutc[25]; // holds UTC Time
-    getUtcTime(dateutc);  
-  
-//    Serial.print(F("GET /weatherstation/updateweatherstation.php?ID="));
-//    Serial.print(WUNDERGROUND_STATION_ID);
-//    Serial.print(F("&PASSWORD="));
-//    Serial.print(WUNDERGROUND_PWD);
-    Serial.print(F("&dateutc="));
-    Serial.print(dateutc);
-    Serial.print(F("&winddir="));
-    Serial.print(windDirection);
-    Serial.print(F("&windspeedmph="));
-    Serial.print(windSpeed);
-    Serial.print(F("&windgustmph="));
-    Serial.print(windgustmph);
-    if ( outsideTemperature > -400 && outsideTemperature < 1300 )  // temp must be between -40 F and 130 F
-    {
-      Serial.print(F("&tempf="));
-      Serial.print((float)outsideTemperature / 10.0);
-    }
-    if ( insideTemperature > 35 )  // remember temp is in 1/10 degrees
-    {
-      Serial.print(F("&indoortempf="));
-      Serial.print(insideTemperature);
-    }
-    Serial.print(F("&rainin="));
-    Serial.print((float)rainRate / 100.0);  // rain inches over the past hour
-    Serial.print(F("&dailyrainin="));   // rain inches so far today in local time
-    Serial.print((float)dayRain / 100.0);  //
-    if ( barometer > 20000L && barometer < 40000L )
-    {
-      Serial.print(F("&baromin="));
-      Serial.print((float)barometer / 1000.0);
-    }
-    Serial.print(F("&dewptf="));
-    Serial.print(dewpoint);
-    Serial.print(F("&humidity="));
-    Serial.print(outsideHumidity);
-//    Serial.print(F("&softwaretype=Arduino%20Moteino%20"));
-//    Serial.print(VERSION);
-//    Serial.print(F("&action=updateraw"));
-    Serial.println();
-    Serial.println();
-  #endif
-} // end printURL()
 
 
