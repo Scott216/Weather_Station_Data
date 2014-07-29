@@ -1,37 +1,31 @@
 /*
 
 To Do:
-Add additional time servers in case one or two fail
-
-
-
-References: http://madscientistlabs.blogspot.ca/2012/05/here-comes-rain.html
-            http://www.wxforum.net/index.php?topic=22082.msg212375#msg212375
-            http://www.wxforum.net/index.php?topic=21550.new;topicseen#new - Arduino Uno weather station        
+Automatically check alternate time servers in case of failure
  
 Test PWS: http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
 Pins:
-A4 SDA 
-A5 SCL
+A4 - SDA 
+A5 - SCL
 A0 - Rx Good LED (green)
 A1 - Rx Bad LED (red)
-D2 - Tx Good LED (green)
+D3 - Tx Good LED (green)
 D7 - Slave select - on v2 of PCB
 D8 - SS for flash (not used in this project)
 D9  Moteino PCB Led
-D10 Slave select for RFM69
-D11-13 - used for SPI
+D2, D10-13 - used by transciever
 
 Change log:
 07/23/14 v0.12 - fixed isNewDay bug.  Averaged wind data and increased wind gust period to 5 minutes.  
 07/24/14 v0.13 - Changed rainRate calculation, looks at 5 minutes instead on an hour, added station ID check
-
+07/25/14 v0.14 - Enabled BPM180 for pressure and inside temp
+07/28/14 v0.15 - Moved Tx Ok LED from D2 to D3.  D2 is used by transciever
 */
 
-#define VERSION "v0.13"  // version of this program
+#define VERSION "v0.15"  // version of this program
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -79,7 +73,6 @@ const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
 byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
 
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xAA, 0xAB, 0xA4 };
-IPAddress ip( 192, 168, 46, 131 );
 
 EthernetClient client;
 EthernetUDP Udp;          // UDP for the time server
@@ -90,7 +83,7 @@ byte windgustmph = 0;            // Wind in MPH
 float dewpoint = 0.0;            // Dewpoint F
 uint16_t dayRain = 0;            // Accumulated rain for the day in 1/100 inch
 uint16_t rainRate = 0;           // Rain rate as number of rain clicks (1/100 inch) per hour (e.g 256 = 2.56 in/hr)
-int16_t insideTemperature =  0;  // Inside temperature in tenths of degrees
+float insideTemperature =  0;  // Inside temperature in tenths of degrees
 int16_t outsideTemperature = 0;  // Outside temperature in tenths of degrees
 uint16_t barometer = 0;          // Current barometer in inches mercury * 1000
 byte outsideHumidity = 0;        // Outside relative humidity in %.
@@ -98,11 +91,11 @@ byte windSpeed = 0;              // Wind speed in miles per hour
 uint16_t windDirection = 0;      // Wind direction from 1 to 360 degrees (0 = no wind data)
 
 // I/O pins
-const byte RX_BAD = A1; 
-const byte RX_OK = A0;
-const byte TX_OK = 2;
-const byte MOTEINO_LED = 8;  // Change to pin 9 in v2
-const byte ETH_SS_PIN =  9;  // Ethernet slave select pin, chage to pin 7 in v2
+const byte RX_OK =      A0;  // LED flashes green every time Moteino receives a good packet
+const byte RX_BAD =     A1;  // LED flashes red every time Moteinoo receives a bad packet
+const byte TX_OK =       3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
+const byte MOTEINO_LED = 9;  // PCB LED on Moteino, not used to indicate anything after startup
+const byte ETH_SS_PIN =  7;  // Slave select for Etheret module
 
 // ISS station ID to be monitored
 const byte TRANSMITTER_STATION_ID = 1; 
@@ -161,13 +154,12 @@ void setup()
     digitalWrite(RX_OK,       !digitalRead(RX_OK));
     digitalWrite(RX_BAD,      !digitalRead(RX_BAD));
     digitalWrite(TX_OK,       !digitalRead(TX_OK));
-    delay(50);
+    delay(250);
   }
       
   // Setup Ethernet
   Ethernet.select(ETH_SS_PIN);  // Set slave select pin - requires modified Ethernet.h library
-// Ethernet.begin(mac, ip);  // This uses less memory but isn't working with WIZ811MJ; works fine with Ethernet shield
-  Ethernet.begin(mac);  
+  Ethernet.begin(mac);  // Would prefer not to use DHCP because it takes up a lot of memory, but it's not working with the WIZ811MJ
   Serial.println(Ethernet.localIP());
   Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
   
@@ -213,7 +205,8 @@ void loop()
   
   getWirelessData();
   
-/*  // dummy data for tesing
+/*
+  // dummy data for tesing
   static byte windDir = 0;
   windDir++;
   // create dummy data
@@ -237,8 +230,8 @@ void loop()
   {
     // Get date that's not from outside weather station
     dewpoint = dewPoint( (float)outsideTemperature/10.0, outsideHumidity);
-    // updateBaromoter();  //srg - check conversion 
-    // updateInsideTemp();
+    updateBaromoter();  
+    updateInsideTemp();
 
     uploadWeatherData();
     uploadTimer = millis() + 20000; // upload again in 10 seconds
@@ -456,10 +449,10 @@ bool uploadWeatherData()
       client.print("&tempf=");
       client.print((float)outsideTemperature / 10.0);
     }
-    if ( insideTemperature > 350 )  // Inside temp must be > 35 F
+    if ( insideTemperature > 35 )  // Inside temp must be > 35 F
     {
       client.print("&indoortempf=");
-      client.print((float)insideTemperature / 10.0);
+      client.print(insideTemperature);
     }
     client.print("&rainin=");
     client.print((float)rainRate / 100.0);  // rain inches over the past hour
@@ -515,10 +508,12 @@ bool uploadWeatherData()
         Serial.println(F("\nTimeout"));
       #endif
       client.stop();
+      return false;
     }    
   }  // end while (client.connected() )
   
   client.stop();
+  blink(TX_OK, 50);
   return true;
   
 } // end uploadWeatherData()
@@ -646,16 +641,12 @@ bool updateBaromoter()
 // Inside temperature from BMP180 sensor
 bool updateInsideTemp()
 {
-  float temperature;
-  bmp.getTemperature(&temperature);
-  if (temperature > 35 && temperature < 110) // Validate indoor temperature range
-  {
-    insideTemperature = temperature * 10.0;
-    return true;
-  }
+  bmp.getTemperature(&insideTemperature);
+  insideTemperature = insideTemperature * 1.8 + 32.0;  // convert to F 
+  if (insideTemperature > 35 && insideTemperature < 110) // Validate indoor temperature range
+  {  return true; }
   else
   { return false; }
-  
 } // end updateInsideTemp()
 
 
@@ -881,10 +872,10 @@ void printURL()
       Serial.print(F("&tempf="));
       Serial.print((float)outsideTemperature / 10.0);
     }
-    if ( insideTemperature > 350 )  // remember temp is in 1/10 degrees
+    if ( insideTemperature > 35 )  // remember temp is in 1/10 degrees
     {
       Serial.print(F("&indoortempf="));
-      Serial.print((float)insideTemperature / 10.0);
+      Serial.print(insideTemperature);
     }
     Serial.print(F("&rainin="));
     Serial.print((float)rainRate / 100.0);  // rain inches over the past hour
