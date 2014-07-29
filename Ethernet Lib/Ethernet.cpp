@@ -8,12 +8,21 @@ uint8_t EthernetClass::_state[MAX_SOCK_NUM] = {
 uint16_t EthernetClass::_server_port[MAX_SOCK_NUM] = { 
   0, 0, 0, 0 };
 
+uint8_t EthernetClass::slaveSelect = 10;
+  
+void EthernetClass::select(uint8_t _ss)
+{
+  W5100.selectSS(_ss);
+  slaveSelect = _ss;
+}
 int EthernetClass::begin(uint8_t *mac_address)
 {
   static DhcpClass s_dhcp;
   _dhcp = &s_dhcp;
 
-
+  pinMode(slaveSelect,OUTPUT);
+  digitalWrite(slaveSelect,HIGH);
+  
   // Initialise the basic info
   W5100.init();
   W5100.setMACAddress(mac_address);

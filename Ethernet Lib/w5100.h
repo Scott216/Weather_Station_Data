@@ -7,6 +7,10 @@
  * published by the Free Software Foundation.
  */
 
+// Modified by SurferTim so different SS pins can be used
+// See forum post: http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
+
+
 #ifndef	W5100_H_INCLUDED
 #define	W5100_H_INCLUDED
 
@@ -130,7 +134,13 @@ class W5100Class {
 
 public:
   void init();
+  void selectSS(uint8_t _ss);
+  static uint8_t  slaveSelect;
+  static void initSS(void);
+  static void setSS(void);
+  static void resetSS(void);
 
+  
   /**
    * @brief	This function is being used for copy the data form Receive buffer of the chip to application buffer.
    * 
@@ -323,6 +333,13 @@ private:
   uint16_t RBASE[SOCKETS]; // Rx buffer base address
 
 private:
+/*
+  inline static void initSS()    { digitalWrite(slaveSelect, HIGH); };
+  inline static void setSS()     { digitalWrite(slaveSelect, LOW); };
+  inline static void resetSS()   { digitalWrite(slaveSelect, HIGH); };
+*/
+
+/*
 #if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
   inline static void initSS()    { DDRB  |=  _BV(4); };
   inline static void setSS()     { PORTB &= ~_BV(4); };
@@ -340,10 +357,12 @@ private:
   inline static void setSS()     { PORTB &= ~_BV(2); };
   inline static void resetSS()   { PORTB |=  _BV(2); };
 #endif
-
+*/
 };
 
 extern W5100Class W5100;
+
+
 
 uint8_t W5100Class::readSn(SOCKET _s, uint16_t _addr) {
   return read(CH_BASE + _s * CH_SIZE + _addr);

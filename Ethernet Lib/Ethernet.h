@@ -1,3 +1,7 @@
+// Modified by SurferTim so different SS pins can be used
+// See forum post: http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
+
+
 #ifndef ethernet_h
 #define ethernet_h
 
@@ -17,6 +21,7 @@ private:
 public:
   static uint8_t _state[MAX_SOCK_NUM];
   static uint16_t _server_port[MAX_SOCK_NUM];
+  static uint8_t slaveSelect;
   // Initialise the Ethernet shield to use the provided MAC address and gain the rest of the
   // configuration through DHCP.
   // Returns 0 if the DHCP configuration failed, and 1 if it succeeded
@@ -26,7 +31,8 @@ public:
   void begin(uint8_t *mac_address, IPAddress local_ip, IPAddress dns_server, IPAddress gateway);
   void begin(uint8_t *mac_address, IPAddress local_ip, IPAddress dns_server, IPAddress gateway, IPAddress subnet);
   int maintain();
-
+  void select(uint8_t _ss);
+  
   IPAddress localIP();
   IPAddress subnetMask();
   IPAddress gatewayIP();

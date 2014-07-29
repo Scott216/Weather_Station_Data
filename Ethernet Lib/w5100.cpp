@@ -23,10 +23,34 @@ W5100Class W5100;
 #define TXBUF_BASE 0x4000
 #define RXBUF_BASE 0x6000
 
+uint8_t W5100Class::slaveSelect = 10;
+
+void W5100Class::selectSS(uint8_t _ss)
+{
+  slaveSelect = _ss;
+}
+
+void W5100Class::initSS(void)
+{ 
+  digitalWrite(slaveSelect, HIGH); 
+}
+
+void W5100Class::setSS(void)
+{ 
+  cli();                             // disable interrupts, see: http://harizanov.com/2012/04/rfm12b-and-arduino-ethernet-with-wiznet5100-chip/
+  digitalWrite(slaveSelect, LOW); 
+}
+
+void W5100Class::resetSS(void)
+{ 
+  digitalWrite(slaveSelect, HIGH);
+  sei();                            // enable interrupts
+}
+
+  
 void W5100Class::init(void)
 {
   delay(300);
-
   SPI.begin();
   initSS();
   
