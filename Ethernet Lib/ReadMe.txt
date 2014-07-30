@@ -1,9 +1,10 @@
-Modified Ethernet files.  You need to replace original Ethernet files
-with these.
+Modified Ethernet files.  You need to replace original Ethernet with the ones in this directory.
+Original files are located:
 
-On a Mac, the Ethernet files are located 
-Applications/Arduino.app (show pkg contents) \Contents\Resources\Java\libraries\Ethernet
-w5100 files are in the subdirectory \utility
+Windows:
+C:\Program Files(x86)\Arduino\libraries\Ethernet\
+C:\Program Files(x86)\Arduino\libraries\Ethernet\utility\ 
 
-In Windows files are located:
-C:\Program Files(x86)\Arduino\libraries\Ethernet and \utility
+Mac:
+/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/ 
+/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/utility/ 
