@@ -1,22 +1,22 @@
 /*
+See Github repository for more information: http://git.io/Ds7oxw
+Test weather station http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
+
 
 To Do:
-Automatically check alternate time servers in case of failure
+Automatically check backup time servers in case first one doesn't work
  
-Test PWS: http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
-
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
-Pins:
-A4 - SDA 
-A5 - SCL
-A0 - Rx Good LED (green)
-A1 - Rx Bad LED (red)
-D3 - Tx Good LED (green)
-D7 - Slave select - on v2 of PCB
-D8 - SS for flash (not used in this project)
-D9  Moteino PCB Led
-D2, D10-13 - used by transciever
+I/O:
+A4,A5 - I2C communication with MPB180 sensor
+A0 - Rx Good LED (green) - good packet received by Moteino
+A1 - Rx Bad LED (red) - bad packet received by Moteino
+D3 - Tx Good LED (green) - good upload to weather underground
+D7 - Slave select for Ethernet module
+D8 - Slave Select for Flash chip if  you got the Flash chip option on your Moteino
+D9  LED mounted on the Moteino PCB 
+D2, D10-13 - used by Moteino transciever
 
 Change log:
 07/23/14 v0.12 - fixed isNewDay bug.  Averaged wind data and increased wind gust period to 5 minutes.  
@@ -24,9 +24,12 @@ Change log:
 07/25/14 v0.14 - Enabled BPM180 for pressure and inside temp
 07/28/14 v0.15 - Moved Tx Ok LED from D2 to D3.  D2 is used by transciever
 07/29/14 v0.16 - Formatting changes,  removed printURL(), removed estOffset()
+07/30/14 v0.17 - Added comments to help other users
+08/06/14 v0.18 - Changed rain calculation from 5 minute buckets to 15 minute buckets
 */
 
-#define VERSION "v0.16"  // version of this program
+#define VERSION "v0.18"  // version of this program
+#define PRINT_DEBUG  // comment out to remove many of the Serial.print() statements
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -37,7 +40,8 @@ Change log:
 #include <Adafruit_BMP085_U.h> // http://github.com/adafruit/Adafruit_BMP085_Unified
 #include <Adafruit_Sensor.h>   // http://github.com/adafruit/Adafruit_Sensor
 #include "Tokens.h"            // Holds Weather Underground password
-
+// #define WUNDERGROUND_PWD "your password"  // uncomment this line and remove #include "Tokens.h" above
+#define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
 
 // Reduce number of bogus compiler warnings
 // See: http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
@@ -48,7 +52,6 @@ Change log:
   typedef unsigned long time_t;
 #endif
 
-#define PRINT_DEBUG  // comment out to remove many of the Serial.print statements
 
 // Header bytes from ISS (weather station tx) that determine what measurement is being sent
 // Valid hex values are: 40 50 60 80 90 A0 E0
@@ -60,7 +63,6 @@ Change log:
 #define ISS_SOLAR_RAD    0x60
 #define ISS_UV_INDEX     0x40
 
-#define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
 char SERVER [] = "weatherstation.wunderground.com";  // standard server
 //char SERVER[] = "rtupdate.wunderground.com";       // Realtime update server.  Daily rain doesn't work with this server
 
@@ -73,7 +75,7 @@ IPAddress timeServer( 132, 163, 4, 101 );    // ntp1.nl.net NTP server
 const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
 byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
 
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xAA, 0xAB, 0xA4 };
+byte mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 };
 
 EthernetClient client;
 EthernetUDP Udp;          // UDP for the time server
@@ -183,7 +185,7 @@ void setup()
   radio.initialize();
   radio.setChannel(0);      // Frequency / Channel is *not* set in the initialization. Do it right after.
 
-  Serial.print("Weather Station ");
+  Serial.print(F("Weather Station "));
   Serial.println(VERSION);
 
   #ifdef PRINT_DEBUG
@@ -515,7 +517,7 @@ bool uploadWeatherData()
 
 
 // Once a minuts calculates rain rain in inches per hour
-// by looking at the rain for the last 5 minutes, and multiply by 12
+// by looking at the rain for the last 15 minutes, and multiply by 4
 // Also track rain accumulation for the day.  Reset at midnight (local time, not UDT time)
 // Everything is in 0.01" units of rain
 void updateRainAccum()
@@ -524,12 +526,12 @@ void updateRainAccum()
   // to set the prevRainCnt to match so we don't count the starting point as rain that came in on this minute 
   static byte prevRainCounter = 0;    // rain count (not incremental) from previous minute
   
-  // If program is bootingup, set previous rain counter to current counter so it's not counting rain that not real
+  // If program is booting up, set previous rain counter to current counter so it's not counting rain that not real
   if ( initialRainReading == FIRST_READING )
   { prevRainCounter = rainCounter; }
   
-  static byte rainEachMinute[5];  // array holds incremental rain for a 5 minute period
-  static byte minuteIndex = 0;    // index for rainEachMinute
+  static byte rainEachMinute[15];  // array holds incremental rain for a 5 minute period
+  static byte minuteIndex = 0;     // index for rainEachMinute
   if ( isNewMinute() )
   {
     // Calculate new rain since since the last minute
@@ -540,14 +542,14 @@ void updateRainAccum()
     { newRain = rainCounter - prevRainCounter; }
     
     rainEachMinute[minuteIndex++] = newRain;
-    if ( minuteIndex == 5 )
+    if ( minuteIndex == 15 )
     { minuteIndex = 0; }
     
     // calculate hourly rain rate
     uint16_t sumRain = 0;
-    for (byte i = 0; i < 5; i++)
+    for (byte i = 0; i < 15; i++)
     { sumRain += rainEachMinute[i]; }
-    rainRate = sumRain * 12;
+    rainRate = sumRain * 4;
     
     prevRainCounter = rainCounter;
     
