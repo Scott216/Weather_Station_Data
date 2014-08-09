@@ -26,9 +26,10 @@ Change log:
 07/29/14 v0.16 - Formatting changes,  removed printURL(), removed estOffset()
 07/30/14 v0.17 - Added comments to help other users
 08/06/14 v0.18 - Changed rain calculation from 5 minute buckets to 15 minute buckets
+08/07/14 v0.19 - adjusted pressure for sea level, see http://bit.ly/1qYzlE6
 */
 
-#define VERSION "v0.18"  // version of this program
+#define VERSION "v0.19"  // version of this program
 #define PRINT_DEBUG  // comment out to remove many of the Serial.print() statements
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
@@ -42,6 +43,8 @@ Change log:
 #include "Tokens.h"            // Holds Weather Underground password
 // #define WUNDERGROUND_PWD "your password"  // uncomment this line and remove #include "Tokens.h" above
 #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
+const float ALTITUDE = 603;  // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
+const byte TRANSMITTER_STATION_ID = 1; // ISS station ID to be monitored
 
 // Reduce number of bogus compiler warnings
 // See: http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
@@ -99,9 +102,6 @@ const byte RX_BAD =     A1;  // LED flashes red every time Moteinoo receives a b
 const byte TX_OK =       3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
 const byte MOTEINO_LED = 9;  // PCB LED on Moteino, not used to indicate anything after startup
 const byte ETH_SS_PIN =  7;  // Slave select for Etheret module
-
-// ISS station ID to be monitored
-const byte TRANSMITTER_STATION_ID = 1; 
 
 uint32_t timestampRxGoodPacket = 0; // timestamp of last good packet Moteino received
 
@@ -203,22 +203,6 @@ void loop()
   
   getWirelessData();
   
-/*
-  // dummy data for tesing
-  static byte windDir = 0;
-  windDir++;
-  // create dummy data
-  windSpeed = (float) windDir / 75.0;
-  windgustmph =  windSpeed * 2;
-  windDirection = windDir;
-  outsideTemperature = 801;
-  outsideHumidity = 59;
-  insideTemperature = 7550;
-  rainRate = 30;
-  dayRain = 0;
-  barometer = 29984; 
-*/
-
   
   // Send data to Weather Underground PWS
   bool isTimeToUpload = (long)(millis() - uploadTimer) > 0;
@@ -275,6 +259,8 @@ bool getWirelessData()
     }
     
     #ifdef PRINT_DEBUG
+//      Serial.print(F("ISS ID ")); 
+//      Serial.println((radio.DATA[0] & 0x07) + 1); 
 //      Serial.print(F("ch: "));
 //      Serial.println(radio.CHANNEL);
 //      Serial.print(F("Data: "));
@@ -626,7 +612,11 @@ bool updateBaromoter()
   
   if (event.pressure)
   {
-    barometer = (float) event.pressure * 29.53 ;  // convert hPa to inches of mercury * 1000
+    float pressureInHg = event.pressure * 29.53 ;  // convert hPa to inches of mercury * 1000
+    float temperatureC;
+    bmp.getTemperature(&temperatureC);
+    float temperatureK = temperatureC = 273.15;
+    barometer = pressureInHg * pow(2.71828182, ALTITUDE / (29.3 * temperatureK));
     return true;
   }
   else
