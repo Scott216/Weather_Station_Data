@@ -27,9 +27,10 @@ Change log:
 07/30/14 v0.17 - Added comments to help other users
 08/06/14 v0.18 - Changed rain calculation from 5 minute buckets to 15 minute buckets
 08/07/14 v0.19 - adjusted pressure for sea level, see http://bit.ly/1qYzlE6
+08/22/14 v0.20 - Changed rain accumulation to assume ISS rain counter rolls over at 127, not 255
 */
 
-#define VERSION "v0.19"  // version of this program
+#define VERSION "v0.20"  // version of this program
 #define PRINT_DEBUG  // comment out to remove many of the Serial.print() statements
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
@@ -44,7 +45,7 @@ Change log:
 // #define WUNDERGROUND_PWD "your password"  // uncomment this line and remove #include "Tokens.h" above
 #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
 const float ALTITUDE = 603;  // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
-const byte TRANSMITTER_STATION_ID = 1; // ISS station ID to be monitored
+const byte TRANSMITTER_STATION_ID = 3; // ISS station ID to be monitored
 
 // Reduce number of bogus compiler warnings
 // See: http://forum.arduino.cc/index.php?PHPSESSID=uakeh64e6f5lb3s35aunrgfjq1&topic=102182.msg766625#msg766625
@@ -502,7 +503,7 @@ bool uploadWeatherData()
 } // end uploadWeatherData()
 
 
-// Once a minuts calculates rain rain in inches per hour
+// Once a minute calculates rain in inches per hour
 // by looking at the rain for the last 15 minutes, and multiply by 4
 // Also track rain accumulation for the day.  Reset at midnight (local time, not UDT time)
 // Everything is in 0.01" units of rain
@@ -516,14 +517,14 @@ void updateRainAccum()
   if ( initialRainReading == FIRST_READING )
   { prevRainCounter = rainCounter; }
   
-  static byte rainEachMinute[15];  // array holds incremental rain for a 5 minute period
+  static byte rainEachMinute[15];  // array holds incremental rain for a 15 minute period
   static byte minuteIndex = 0;     // index for rainEachMinute
   if ( isNewMinute() )
   {
     // Calculate new rain since since the last minute
     byte newRain = 0; // incremental new rain since last minute
     if ( rainCounter < prevRainCounter )
-    { newRain = (256 - prevRainCounter) + rainCounter; } // variable has rolled over
+    { newRain = (128 - prevRainCounter) + rainCounter; } // variable has rolled over
     else
     { newRain = rainCounter - prevRainCounter; }
     
