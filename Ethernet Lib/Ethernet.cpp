@@ -69,6 +69,10 @@ void EthernetClass::begin(uint8_t *mac_address, IPAddress local_ip, IPAddress dn
 
 void EthernetClass::begin(uint8_t *mac, IPAddress local_ip, IPAddress dns_server, IPAddress gateway, IPAddress subnet)
 {
+
+  pinMode(slaveSelect,OUTPUT);
+  digitalWrite(slaveSelect,HIGH);
+  
   W5100.init();
   W5100.setMACAddress(mac);
   W5100.setIPAddress(local_ip._address);
