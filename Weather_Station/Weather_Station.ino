@@ -43,14 +43,16 @@ Change log:
 10/06/14 v0.27   Added PRINT_DEBUG_WU_UPLOAD so I can only monitor Ethernet uploads and not fill serial monitor with other text
 10/06/14 v0.28   Get wind gust from ISS instead of calculating.  Changed Solar rad formula, but that's not used by me
 10/07/14 v0.29   Fixed bug in rain accumulation. Fixed wind speed bug in v.028
-10/0/14  v.030   Removed unused rain rate code.  Small general clean-up
+10/08/14 v.030   Removed unused rain rate code.  Small general clean-up
+10/14/14 v0.31   Removed smoothing of wind direction, formula was invalid
+10/15/14 v0.32   Use vector averaging for wind direction
 
 */
 
-#define VERSION "v0.30" // version of this program
+#define VERSION "v0.32" // version of this program
 //#define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
-#define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
-//#define PRINT_DEBUG_RAIN // prints out rain rate testing data
+//#define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
+#define PRINT_DEBUG_RAIN // prints out rain rate testing data
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -136,8 +138,8 @@ bool getWirelessData();
 void processPacket();
 bool uploadWeatherData();
 void updateRainAccum();
-void updateRainRate( uint16_t rainSeconds );
-void smoothWindDir(uint16_t windDir);
+void updateRainRate(uint16_t rainSeconds);
+void avgWindDir(uint16_t windDir);
 bool updateBaromoter();
 bool updateInsideTemp();
 float dewPointFast(float tempF, byte humidity);
@@ -336,7 +338,7 @@ void processPacket()
   // See http://www.wxforum.net/index.php?topic=21967.50
   uint16_t windDir = 9 + radio.DATA[2] * 342.0f / 255.0f;
   // Average out the wind direction 
-  smoothWindDir( windDir );
+  avgWindDir( windDir );
   #ifdef PRINT_DEBUG
     Serial.print(F("Wind Direction: "));
     Serial.print(windDir);
@@ -416,7 +418,7 @@ void processPacket()
       Serial.print(g_rainCounter);
       Serial.print("\t");
       Serial.print(radio.DATA[3], HEX);
-      Serial.print("\t");
+      Serial.print(" ");
       Serial.print(radio.DATA[4], HEX);
       Serial.println();
     #endif
@@ -627,19 +629,49 @@ void updateRainRate( uint16_t rainSeconds )
 }  // end updateRainRate()
 
 
-// For for wind direction calculation, use a smoothing algorithm
-// To avoid problem of direction crossing over from a high number like 350 to a low number like 3, add 1000 to direction,
-// smooth it, then subtract 1000.  Wind direction goes from 1 to 360
-void smoothWindDir(uint16_t windDir)
+// Calculate average of wind direction
+// Because wind direction goes from 359 to 0, use vector averaging to determine direction
+void avgWindDir(uint16_t windDir)
 {
-  if ( g_windDirection == 0 )
-  { g_windDirection = windDir; } // No wind data calculated yet, set initial conditions
-  float windDirSmoothingOld = g_windDirection + 1000.0;
-  float windDirSmoothingNew =         windDir + 1000.0;
-  float filterVal = 0.05;
-  g_windDirection = (windDirSmoothingOld * (1.0 - filterVal)) + ( windDirSmoothingNew * filterVal);
-  g_windDirection = g_windDirection - 1000; // convert back to 1-360 range
-}  // end smoothWindDir()
+  const byte ARYSIZE = 30;     // number of elements in arrays
+  const float DEG2RAD = 3.14156 / 180.0; // convert degrees to radian
+  static float dirNorthSouth[ARYSIZE];
+  static float dirEastWest[ARYSIZE];
+  static byte c = 0; // array counter
+  
+  if ( c == ARYSIZE )
+  { c = 0; }
+  
+  windDir = windDir + 1; // convert range from 0-359 to 1 to 360
+
+  dirNorthSouth[c] = cos(windDir * DEG2RAD);
+  dirEastWest[c++] = sin(windDir * DEG2RAD);
+  
+  // Get array totals
+  float sumNorthSouth = 0.0;
+  float sumEastWest =   0.0;
+  for (byte i = 0; i < ARYSIZE; i++)
+  { 
+    sumNorthSouth += dirNorthSouth[i];
+    sumEastWest +=   dirEastWest[i];
+  }
+  
+  float avgWindDir = atan2( (sumEastWest/(float) ARYSIZE), (sumNorthSouth/(float) ARYSIZE));
+  avgWindDir = avgWindDir / DEG2RAD;  // convert radians back to degrees
+  
+  if ( avgWindDir < 0 )
+  { avgWindDir += 360; }
+
+  g_windDirection = (int)avgWindDir % 360; // atan2() result can be > 360, so use modulus to just return remainder
+  g_windDirection = g_windDirection - 1; // convert range back to 0-359
+  
+  Serial.print(c);  
+  Serial.print("\t");
+  Serial.print(windDir);
+  Serial.print("\t");
+  Serial.println(g_windDirection);
+    
+}  // end avgWindDir()
 
 
 // Get pressure reading from baromoter - located inside, not outside on weather station
