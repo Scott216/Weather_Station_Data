@@ -178,7 +178,7 @@ void setup()
       
   // Setup Ethernet
   Ethernet.select(ETH_SS_PIN);  // Set slave select pin - requires modified Ethernet.h library
-  Ethernet.begin(g_mac, g_ip);  // Would prefer not to use DHCP because it takes up a lot of memory, but it's not working with the WIZ811MJ
+  Ethernet.begin(g_mac, g_ip);  
   Serial.println(Ethernet.localIP());
   Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
   
@@ -195,7 +195,7 @@ void setup()
 
   // Setup Moteino radio
   radio.initialize();
-  radio.setChannel(0);      // Frequency - Channel is *not* set in the initialization. Need to do it now
+  radio.setChannel(0); // Frequency - Channel is *not* set in the initialization. Need to do it now
 
   printFreeRam();
   Serial.println();
