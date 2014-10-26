@@ -46,13 +46,15 @@ Change log:
 10/08/14 v.030   Removed unused rain rate code.  Small general clean-up
 10/14/14 v0.31   Removed smoothing of wind direction, formula was invalid
 10/15/14 v0.32   Use vector averaging for wind direction
+10/20/14 v0.33   Changed wind direction formula to get rid of dead zone, see http://bit.ly/1uxc9sf
+10/24/14 v.034   Tweaked rain rate formula based on results from last test and fixed wind direction rollover
 
 */
 
-#define VERSION "v0.32" // version of this program
+#define VERSION "v0.34" // version of this program
 //#define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
-//#define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
-#define PRINT_DEBUG_RAIN // prints out rain rate testing data
+#define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
+//#define PRINT_DEBUG_RAIN // prints out rain rate testing data
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -139,7 +141,7 @@ void processPacket();
 bool uploadWeatherData();
 void updateRainAccum();
 void updateRainRate(uint16_t rainSeconds);
-void avgWindDir(uint16_t windDir);
+void avgWindDir(float windDir);
 bool updateBaromoter();
 bool updateInsideTemp();
 float dewPointFast(float tempF, byte humidity);
@@ -336,9 +338,13 @@ void processPacket()
   // and 352 degrees inclusive. These values correspond to received byte
   // values of 1 and 255 respectively
   // See http://www.wxforum.net/index.php?topic=21967.50
-  uint16_t windDir = 9 + radio.DATA[2] * 342.0f / 255.0f;
-  // Average out the wind direction 
-  avgWindDir( windDir );
+//  float windDir = 9 + radio.DATA[2] * 342.0f / 255.0f; - formula has dead zone from 352 to 10 degrees
+  float windDir; 
+  if ( radio.DATA[2] == 0 )
+  { windDir = 0; }
+  else 
+  { windDir = ((float)radio.DATA[2] * 1.40625) + 0.3; }  // This formula doesn't have dead zone, see: http://bit.ly/1uxc9sf
+  avgWindDir( windDir );  // Average out the wind direction with vector math
   #ifdef PRINT_DEBUG
     Serial.print(F("Wind Direction: "));
     Serial.print(windDir);
@@ -403,9 +409,9 @@ void processPacket()
   case ISS_RAIN_SECONDS:  // Seconds between bucket tips, used to calculate rain rate.  See: http://www.wxforum.net/index.php?topic=10739.msg190549#msg190549
     byte4MSN = radio.DATA[4] >> 4;
     if ( byte4MSN < 4 )
-    { rainSeconds =  (radio.DATA[3] >> 4) + radio.DATA[4]; }  
+    { rainSeconds =  (radio.DATA[3] >> 4) + radio.DATA[4] - 1; }  
     else
-    { rainSeconds = radio.DATA[3] + (byte4MSN - 4) * 262; }   
+    { rainSeconds = radio.DATA[3] + (byte4MSN - 4) * 256; }   
 
     updateRainRate(rainSeconds);
     
@@ -631,7 +637,7 @@ void updateRainRate( uint16_t rainSeconds )
 
 // Calculate average of wind direction
 // Because wind direction goes from 359 to 0, use vector averaging to determine direction
-void avgWindDir(uint16_t windDir)
+void avgWindDir(float windDir)
 {
   const byte ARYSIZE = 30;     // number of elements in arrays
   const float DEG2RAD = 3.14156 / 180.0; // convert degrees to radian
@@ -663,14 +669,10 @@ void avgWindDir(uint16_t windDir)
   { avgWindDir += 360; }
 
   g_windDirection = (int)avgWindDir % 360; // atan2() result can be > 360, so use modulus to just return remainder
-  g_windDirection = g_windDirection - 1; // convert range back to 0-359
   
-  Serial.print(c);  
-  Serial.print("\t");
-  Serial.print(windDir);
-  Serial.print("\t");
-  Serial.println(g_windDirection);
-    
+  if (g_windDirection >=1 )
+  { g_windDirection = g_windDirection - 1; } // convert range back to 0-359
+   
 }  // end avgWindDir()
 
 
