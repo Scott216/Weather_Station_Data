@@ -6,8 +6,10 @@ Test weather station http://www.wunderground.com/personal-weather-station/dashbo
 
 To Do:
 Automatically switch to alternate time server if main one deosn't work
-If no WU uploads in 10 minutes, reboot
 On reboot, query WU and get starting rain accumulation for the day
+Use WDT - program can hang after network problems.  Make sure WDT doesn't trigger while sketch is trying to set frequencies
+Reboot counter is only good for bytes, change so you can read and write integers
+
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
@@ -47,28 +49,31 @@ Change log:
 10/14/14 v0.31   Removed smoothing of wind direction, formula was invalid
 10/15/14 v0.32   Use vector averaging for wind direction
 10/20/14 v0.33   Changed wind direction formula to get rid of dead zone, see http://bit.ly/1uxc9sf
-10/24/14 v.034   Tweaked rain rate formula based on results from last test and fixed wind direction rollover
-
+10/24/14 v0.34   Tweaked rain rate formula based on results from last test and fixed wind direction rollover
+11/29/14 v0.35   Enabled internal pull-up resistors on SPI slave select pins
+12/11/14 v0.36   Added Reboot counter.
+12/18/14 v0.37   Made Moetino on board LED as a heartbeat
 */
 
-#define VERSION "v0.34" // version of this program
-//#define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
+#define VERSION "v0.37" // version of this program
+#define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 //#define PRINT_DEBUG_RAIN // prints out rain rate testing data
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
-#include <EthernetUdp.h>
+#include <EthernetUdp.h>       // https://github.com/arduino/Arduino/blob/master/libraries/Ethernet/EthernetUdp.h
 #include <SPI.h>               // DavisRFM69.h needs this   http://arduino.cc/en/Reference/SPI
-#include <Wire.h>
+#include <Wire.h>              // https://github.com/arduino/Arduino/tree/master/libraries/Wire
+#include <EEPROM.h>            // http://arduino.cc/en/Reference/EEPROM
 #include "RTClib.h"            // http://github.com/adafruit/RTClib
-#include <Adafruit_BMP085_U.h> // http://github.com/adafruit/Adafruit_BMP085_Unified
-#include <Adafruit_Sensor.h>   // http://github.com/adafruit/Adafruit_Sensor
+#include "Adafruit_BMP085_U.h" // http://github.com/adafruit/Adafruit_BMP085_Unified
+#include "Adafruit_Sensor.h"   // http://github.com/adafruit/Adafruit_Sensor
 #include "Tokens.h"            // Holds Weather Underground password
-// #define WUNDERGROUND_PWD "your password"  // uncomment this line and remove #include "Tokens.h" above
+
 #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
-const float ALTITUDE = 603;  // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
-const byte TRANSMITTER_STATION_ID = 3; // ISS station ID to be monitored.  Default station ID is normally 1
+const float ALTITUDE = 603.0;               // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
+const byte TRANSMITTER_STATION_ID = 3;      // ISS station ID to be monitored.  Default station ID is normally 1
 
 // Reduce number of bogus compiler warnings, see http://bit.ly/1pU6XMe
 #undef PROGMEM
@@ -103,6 +108,9 @@ IPAddress g_timeServer( 132, 163, 4, 101 );   // ntp1.nl.net NTP server
 byte g_mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 };
 byte g_ip[] = { 192, 168, 46, 85 };   // Static IP on LAN
 
+const int ADDR_REBOOT = 0;    // EEPROM address for reboot counter
+uint16_t Reboot_Counter;      // Counts reboots
+
 // Weather data to send to Weather Underground
 byte     g_rainCounter =        0;  // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 127 then rolls over to zero
 byte     g_windgustmph =        0;  // Wind in MPH
@@ -121,8 +129,9 @@ bool     g_gotInitialWeatherData = false;  // flag to indicate when weather data
 const byte RX_OK =      A0;  // LED flashes green every time Moteino receives a good packet
 const byte RX_BAD =     A1;  // LED flashes red every time Moteinoo receives a bad packet
 const byte TX_OK =       3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
-const byte MOTEINO_LED = 9;  // PCB LED on Moteino, only used to flash at startup
-const byte ETH_SS_PIN =  7;  // Slave select for Ethernet module
+const byte MOTEINO_LED = 9;  // PCB LED on Moteino
+const byte SS_PIN_ETHERNET =  7;  // Slave select for Ethernet module
+const byte SS_PIN_MOTEINO = 10; // Moteino slave select pin
 
 // Used to track first couple of rain readings so initial rain counter can be set
 enum rainReading_t { NO_READING, FIRST_READING, AFTER_FIRST_READING };
@@ -160,26 +169,40 @@ void setup()
 {
   Serial.begin(9600);
   delay(4000); 
+  
+  // Read and update reboot counter in EEPROM memory
+  Reboot_Counter =  EEPROM.read(ADDR_REBOOT) + 1;
+  EEPROM.write(ADDR_REBOOT, Reboot_Counter);
+  
   Serial.print(F("Weather Station "));
   Serial.println(VERSION);
-
+  Serial.print(F("Reboots = "));
+  Serial.println(Reboot_Counter);
+  
   pinMode(MOTEINO_LED, OUTPUT);
   pinMode(RX_OK,       OUTPUT);
   pinMode(RX_BAD,      OUTPUT);
   pinMode(TX_OK,       OUTPUT);
 
+  // Enable internal pull-up resistors for SPI CS pins, ref: http://www.dorkbotpdx.org/blog/paul/better_spi_bus_design_in_3_steps
+  pinMode(SS_PIN_ETHERNET, OUTPUT);
+  pinMode(SS_PIN_MOTEINO,  OUTPUT);
+  digitalWrite(SS_PIN_ETHERNET, HIGH);
+  digitalWrite(SS_PIN_MOTEINO,  HIGH);
+  delay(1);
+
   // Flash all LEDs
-  for (int i = 0; i < 6; i++)
+  for (int i = 0; i < 10; i++)
   {
     digitalWrite(MOTEINO_LED, !digitalRead(MOTEINO_LED));
     digitalWrite(RX_OK,       !digitalRead(RX_OK));
     digitalWrite(RX_BAD,      !digitalRead(RX_BAD));
     digitalWrite(TX_OK,       !digitalRead(TX_OK));
-    delay(250);
+    delay(150);
   }
       
   // Setup Ethernet
-  Ethernet.select(ETH_SS_PIN);  // Set slave select pin - requires modified Ethernet.h library
+  Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h library
   Ethernet.begin(g_mac, g_ip);  
   Serial.println(Ethernet.localIP());
   Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
@@ -207,7 +230,17 @@ void setup()
 
 void loop()
 {
-  static uint32_t uploadTimer = 0; // timer to send data to weather underground
+  static uint32_t uploadTimer = 0; // timer to send data to Weather Underground
+  static uint32_t lastUploadTime = millis();  // Timestamp of last upload to Weather Underground.  Use for reboot if no WU uploads in a while.
+  static uint32_t heartBeatLedTimer = millis(); // Used to flash heartbeat LED
+  
+  // Heartbeat LED
+  if ( (long)(millis() - heartBeatLedTimer) > 200 )
+  {
+    digitalWrite(MOTEINO_LED, !digitalRead(MOTEINO_LED));
+    heartBeatLedTimer = millis();
+  }
+  
   DateTime now = rtc.now();
   
   bool haveFreshWeatherData = getWirelessData();
@@ -222,13 +255,22 @@ void loop()
     updateBaromoter();  
     updateInsideTemp();
 
-    uploadWeatherData();
-    uploadTimer = millis() + 60000; // upload again in 60 seconds
+    if( uploadWeatherData() )       /// Upload weather data
+    { lastUploadTime = millis(); }  // If upload was successful, save timestamp
+    
+    uploadTimer = millis() + 60000; // set timer to upload again in 60 seconds
   }
   
   // Reboot if millis is close to rollover. RTC_Millis won't work properly if millis rolls over.  Takes 49 days to rollover
   if( millis() > 4294000000UL )
   { softReset(); }
+
+  // Reboot if no Weather Underground uploads in 30 minutes (1,800,000 mS)
+  if( (long) ( millis() - lastUploadTime ) > 1800000L )
+  { 
+    Serial.println(F("Reboot - No WU Upload"));
+    softReset(); 
+  }
   
 }  // end loop()
 
@@ -567,7 +609,7 @@ bool uploadWeatherData()
     {
       client.stop();
       #ifdef PRINT_DEBUG_WU_UPLOAD
-        Serial.println(F("\n\nEthernet Timeout. Waited "));
+        Serial.print(F("\n\nEthernet Timeout. Waited "));
         Serial.print((long)(millis() - uploadApiTimer));
         Serial.println(" mS");
       #endif
