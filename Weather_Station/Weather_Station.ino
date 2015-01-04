@@ -53,9 +53,10 @@ Change log:
 12/18/14 v0.37   Made Moetino on board LED as a heartbeat
 12/23/14 v0.38   Made reboot counter in EEPROM an integer instead of a byte.  Redid output for PRINT_DEBUG.  Made it a tab delimited table. 
                  On startup get get daily rain accumulation from Weather Underground
+12/31/14 v0.39   Added 2 second delay after Udp.begin to see if it helped reduce serial monitor jibberish
 */
 
-#define VERSION "v0.38" // version of this program
+#define VERSION "v0.39" // version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -229,6 +230,8 @@ void setup()
   Ethernet.begin(g_mac, g_ip);  
   Serial.println(Ethernet.localIP());
   Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
+  delay(2000); // test to see if serial monitor jibberish goes away
+  
   
   // Read the current daily rain accumulation from Weather Underground
   g_dayRain = getTodayRain();
