@@ -7,7 +7,9 @@ Test weather station http://www.wunderground.com/personal-weather-station/dashbo
 To Do:
 Automatically switch to alternate time server if main one deosn't work
 Use WDT - program can hang after network problems.  Make sure WDT doesn't trigger while sketch is trying to set frequencies
- 
+Print timestamp of Upload failures
+Make moteino control power to Ethernet module so when it reboots, power is cycled to module
+
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
@@ -54,9 +56,17 @@ Change log:
 12/23/14 v0.38   Made reboot counter in EEPROM an integer instead of a byte.  Redid output for PRINT_DEBUG.  Made it a tab delimited table. 
                  On startup get get daily rain accumulation from Weather Underground
 12/31/14 v0.39   Added 2 second delay after Udp.begin to see if it helped reduce serial monitor jibberish
+                 Binary sketch size: 29,780 bytes (of a 32,256 byte maximum)
+                 Free RAM 445 bytes
+01/09/15 v0.40   Moved reboot address to byte 2 because it wrote 1831 times to address 0
+01/10/15 v0.41   Changed WU Station ID to from test station (KVTDOVER3) to the real station (KVTWESTD3)
+01/10/15 v0.42   Changed getUtcTime() to getTime and added parameter to return UTC or EST time
+                 Added watchdog timer for WU uplaod.  Can't use it for the radio because radio takes over 8 seconds to lock onto channels
+                 30,086 bytes, RAM 423 bytes
+01/11/15 v0.43   Fixed Hautespot (router needed reboot).  Switch this sketch back to test weather station
 */
 
-#define VERSION "v0.39" // version of this program
+#define VERSION "v0.43" // version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -70,7 +80,9 @@ Change log:
 #include "Adafruit_BMP085_U.h" // http://github.com/adafruit/Adafruit_BMP085_Unified
 #include "Adafruit_Sensor.h"   // http://github.com/adafruit/Adafruit_Sensor
 #include <TextFinder.h>        // http://playground.arduino.cc/Code/TextFinder
+#include <avr/wdt.h>
 #include "Tokens.h"            // Holds Weather Underground password
+
 
 #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID
 const float ALTITUDE = 603.0;               // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
@@ -111,7 +123,6 @@ IPAddress g_timeServer( 132, 163, 4, 101 );   // ntp1.nl.net NTP server
 byte g_mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 };
 byte g_ip[] = { 192, 168, 46, 85 };   // Static IP on LAN
 
-
 // Weather data to send to Weather Underground
 byte     g_rainCounter =        0;  // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 127 then rolls over to zero
 byte     g_windgustmph =        0;  // Wind in MPH
@@ -128,16 +139,20 @@ uint16_t g_windDirection_Avg =  0;  // Average wind direction, from 1 to 360 deg
 bool     g_gotInitialWeatherData = false;  // flag to indicate when weather data is first received.  Used to prevent zeros from being uploaded to Weather Underground upon startup
 
 // I/O pins
-const byte RX_OK =      A0;  // LED flashes green every time Moteino receives a good packet
-const byte RX_BAD =     A1;  // LED flashes red every time Moteinoo receives a bad packet
-const byte TX_OK =       3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
-const byte MOTEINO_LED = 9;  // PCB LED on Moteino
+const byte RX_OK =           A0;  // LED flashes green every time Moteino receives a good packet
+const byte RX_BAD =          A1;  // LED flashes red every time Moteinoo receives a bad packet
+const byte TX_OK =            3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
+const byte MOTEINO_LED =      9;  // PCB LED on Moteino
 const byte SS_PIN_ETHERNET =  7;  // Slave select for Ethernet module
-const byte SS_PIN_MOTEINO = 10; // Moteino slave select pin
+const byte SS_PIN_MOTEINO =  10;  // Moteino slave select pin
 
 // Used to track first couple of rain readings so initial rain counter can be set
 enum rainReading_t { NO_READING, FIRST_READING, AFTER_FIRST_READING };
 rainReading_t g_initialRainReading = NO_READING;  // Need to know when very first rain counter reading comes so inital calculation is correct  
+
+const byte UTCZONE = 0;
+const byte ESTZONE = 1;
+
 
 // Instantiate class objects
 EthernetClient client;
@@ -160,10 +175,10 @@ float  dewPointFast(float tempF, byte humidity);
 float  dewPoint(float tempf, byte humidity);
 void   printFreeRam();
 void   printData(uint16_t rainSeconds);
-void printRadioInfo();
+void   printRadioInfo();
 void   printPacket();  // prints packet from ISS in hex
 void   blink(byte PIN, int DELAY_MS);
-void   getUtcTime(char timebuf[]);
+void   getTime(char timebuf[], byte timezone);
 bool   isNewDay();
 time_t getNtpTime();
 void   sendNTPpacket(IPAddress &address, byte *packetBuff, int PACKET_SIZE);
@@ -172,11 +187,12 @@ void   softReset();
 
 void setup() 
 {
+  wdt_disable();
   Serial.begin(9600);
   delay(6000); 
   
   // Read and update reboot counter in EEPROM memory
-  const uint8_t ADDR_REBOOT = 0;      // EEPROM address for reboot counter
+  const uint8_t ADDR_REBOOT = 2;      // EEPROM address for reboot counter
   uint16_t      Reboot_Counter;       // Counts reboots - integer
   uint8_t       Reboot_Counter_b[2];  // reboot counter converted to two bytes
  
@@ -190,6 +206,7 @@ void setup()
   
   // Increment reboot counter
   Reboot_Counter++;
+
   // Convert reboot counter back to two bytes
   Reboot_Counter_b[0] = Reboot_Counter >> 8 & 0xff;
   Reboot_Counter_b[1] = Reboot_Counter & 0xff;
@@ -284,9 +301,11 @@ void loop()
     g_dewpoint = dewPoint( (float)g_outsideTemperature/10.0, g_outsideHumidity);
     updateBaromoter();  
     updateInsideTemp();
-
+    
+    wdt_enable(WDTO_8S); // Turn watchdog on - only want it running for Ethernet upload.  Can't use it for radio because it would reset when frequency hopping
     if( uploadWeatherData() )       /// Upload weather data
     { lastUploadTime = millis(); }  // If upload was successful, save timestamp
+    wdt_disable();    
     
     uploadTimer = millis() + 60000; // set timer to upload again in 60 seconds
   }
@@ -532,9 +551,11 @@ bool uploadWeatherData()
   uint32_t uploadApiTimer = millis();  // Used to time how long it takes to upload to WU
 
   // Get UTC time and format
-  char dateutc[25];
-  getUtcTime(dateutc);  
-
+  char formatedDate[25];
+  getTime(formatedDate, UTCZONE);  
+  
+  wdt_reset();
+  
   // Send the Data to weather underground
   if (client.connect(g_server, 80))
   {
@@ -543,7 +564,7 @@ bool uploadWeatherData()
     client.print("&PASSWORD=");
     client.print(WUNDERGROUND_PWD);
     client.print("&dateutc=");
-    client.print(dateutc);
+    client.print(formatedDate);
     client.print("&winddir=");
     client.print(g_windDirection_Avg);
     client.print("&windspeedmph=");
@@ -593,7 +614,8 @@ bool uploadWeatherData()
   
   uint32_t lastRead = millis();
   uint32_t connectLoopCounter = 0;  // used to timeout ethernet connection 
-
+  wdt_reset();
+  
   while (client.connected() && (millis() - lastRead < 1000))  // wait up to one second for server response
   {
     while (client.available()) 
@@ -619,6 +641,8 @@ bool uploadWeatherData()
     }    
   }  // end while (client.connected() )
   
+  wdt_reset();
+  
   client.stop();
   blink(TX_OK, 50);
   #ifdef PRINT_DEBUG_WU_UPLOAD
@@ -628,6 +652,15 @@ bool uploadWeatherData()
       Serial.println((long)(millis() - uploadApiTimer));
     }
   #endif
+  
+  // Print EST time
+  #ifdef PRINT_DEBUG_WU_UPLOAD
+    getTime(formatedDate, ESTZONE); 
+    Serial.println(formatedDate); 
+    Serial.println();
+  #endif
+  
+  wdt_reset();
   return true;
   
 } // end uploadWeatherData()
@@ -789,7 +822,7 @@ float dewPoint(float tempf, byte humidity)
 // Time is 23 characters long, 
 // Data need to be URL escaped: 2014-01-01 10:32:35 becomes 2014-01-01+10%3A32%3A35
 // Every 10 minutes sketch will query NTP time server to update the time
-void getUtcTime(char timebuf[])
+void getTime(char timebuf[], byte timezone)
 {
   static uint32_t refreshNTPTimeTimer = 0; // Timer used to determine when to get time from NTP time server
    
@@ -809,11 +842,25 @@ void getUtcTime(char timebuf[])
      #endif
     }
   }
-  // Get UTC time and format for weather underground
-  DateTime now = rtc.now();
-  sprintf(timebuf, "%d-%02d-%02d+%02d%%3A%02d%%3A%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
 
-} // end getUtcTime()
+  // Get time and format either UTC or EST timezone
+  DateTime now = rtc.now();
+  DateTime estNow = rtc.now() + (3600UL * -5L);  // Winter EST time zone
+
+  switch (timezone)
+  {
+   case UTCZONE:
+     sprintf(timebuf, "%d-%02d-%02d+%02d%%3A%02d%%3A%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+     break;
+   case ESTZONE:
+     sprintf(timebuf, "%d:%02d:%02d  %d/%d/%d", estNow.hour(), estNow.minute(), estNow.second(), estNow.month(), estNow.day(),estNow.year() );
+     break;
+   default:  // dafault to UTC
+     sprintf(timebuf, "%d-%02d-%02d+%02d%%3A%02d%%3A%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+     break;
+  }
+  
+} // end getTime()
 
 
 // Return true if it's a new day. This is local (EST) time, not UTC
