@@ -1,0 +1,42 @@
+#######################################
+# Syntax Coloring Map for Davis
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+#######################################
+# DHTxx Instances (KEYWORD1)
+#######################################
+DHTxx	KEYWORD1
+
+#######################################
+# DavisRFM69 Instances (KEYWORD1)
+#######################################
+DavisRFM69	KEYWORD1
+
+#######################################
+# DHTxx Methods and Functions (KEYWORD2)
+#######################################
+reading	KEYWORD2
+
+#######################################
+# DavisRFM69 Methods and Functions (KEYWORD2)
+#######################################
+initialize	KEYWORD2
+setChannel	KEYWORD2
+hop	KEYWORD2
+interruptHandler	KEYWORD2
+sendFrame  KEYWORD2
+reverseBits KEYWORD2
+crc16_ccitt KEYWORD2
+#######################################
+# Constants (LITERAL1)
+#######################################
+FRF	LITERAL1
+
+#######################################
+# Variables/Volatiles (LITERAL2)
+#######################################
+hopIndex	LITERAL2
