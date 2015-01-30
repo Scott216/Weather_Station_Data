@@ -9,6 +9,15 @@
 // it is released under the same Creative Commons Attrib Share-Alike License
 // You are free to use/extend this library but please abide with the CC-BY-SA license:
 // http://creativecommons.org/licenses/by-sa/3.0/
+//
+// Scott's Notes
+// - Made changes so library would work with MoteinoMega
+// - Added statement to insure slave select pin would be high
+// - Slowed down SPI speed
+// - Moved SPI.setDataMode(), SPI.setBitOrder(), SPI.setClockDivider from initialize() to interruptHandler()
+// The above changes reflect some of the changes in the LowPowerLabs RFM69 library
+// See forum post: https://lowpowerlab.com/forum/index.php/topic,864.msg5461.html#msg5461
+
 
 #ifndef DAVISRFM69_h
 #define DAVISRFM69_h
@@ -23,12 +32,26 @@
 //#define DAVIS_FREQS_AU
 //#define DAVIS_FREQS_NZ
 
-#include <Davisdef.h>
-#include <Arduino.h>            //assumes Arduino IDE v1.0 or greater
+#include <Davisdef.h>           // http://github.com/dekay/DavisRFM69/blob/master/Davisdef.h
+#include <Arduino.h>            // Assumes Arduino IDE v1.0 or greater
 
 #define DAVIS_PACKET_LEN      8 // ISS has fixed packet lengths of eight bytes, including CRC
 #define SPI_CS               SS // SS is the SPI slave select pin, for instance D10 on atmega328
-#define RF69_IRQ_PIN          2 // INT0 on AVRs should be connected to DIO0 (ex on Atmega328 it's D2)
+
+// SRG  Added if defined  for MoteinoMega comp ability
+//      Ref: https://github.com/LowPowerLab/RFM69/commit/e8a076784954da19acd2009b12e23f15e5894b8d
+// INT0 on AVRs should be connected to RFM69's DIO0 (ex on ATmega328 it's D2, on ATmega644/1284 it's D2)
+#if defined(__AVR_ATmega168__) || defined(__AVR_ATmega328P__) || defined(__AVR_ATmega88) || defined(__AVR_ATmega8__) || defined(__AVR_ATmega88__)
+  #define RF69_IRQ_PIN          2
+  #define RF69_IRQ_NUM          0
+#elif defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__)
+  #define RF69_IRQ_PIN          2
+  #define RF69_IRQ_NUM          2
+#elif defined(__AVR_ATmega32U4__)
+  #define RF69_IRQ_PIN          3
+  #define RF69_IRQ_NUM          0
+#endif
+
 #define CSMA_LIMIT          -90 // upper RX signal sensitivity threshold in dBm for carrier sense access
 #define RF69_MODE_SLEEP       0 // XTAL OFF
 #define RF69_MODE_STANDBY     1 // XTAL ON
@@ -47,9 +70,13 @@ class DavisRFM69 {
     static volatile byte CHANNEL;
     static volatile int RSSI;
 
-    DavisRFM69(byte slaveSelectPin=SPI_CS, byte interruptPin=RF69_IRQ_PIN, bool isRFM69HW=false) {
+
+  //  SRG See: http://github.com/LowPowerLab/RFM69/blob/e8a076784954da19acd2009b12e23f15e5894b8d/RFM69.h#L78
+
+    DavisRFM69(byte slaveSelectPin=SPI_CS, byte interruptPin=RF69_IRQ_PIN, bool isRFM69HW=false, byte interruptNum=RF69_IRQ_NUM) {
       _slaveSelectPin = slaveSelectPin;
       _interruptPin = interruptPin;
+      _interruptNum = interruptNum;
       _mode = RF69_MODE_STANDBY;
       _packetReceived = false;
       _powerLevel = 31;
@@ -62,7 +89,7 @@ class DavisRFM69 {
     void hop();
     unsigned int crc16_ccitt(volatile byte *buf, byte len, unsigned int initCrc = 0);
 
-    void initialize();
+    bool initialize();
     bool canSend();
     void send(const void* buffer, byte bufferSize);
     bool receiveDone();
@@ -90,6 +117,7 @@ class DavisRFM69 {
     static DavisRFM69* selfPointer;
     byte _slaveSelectPin;
     byte _interruptPin;
+    byte _interruptNum;
     byte _powerLevel;
     bool _isRFM69HW;
 
@@ -195,7 +223,7 @@ static PacketStats packetStats = {0, 0, 0, 0 ,0};
 #define LOOP_PACKET_LENGTH 97
 
 // LOOP data packet length and structure.
-// See http://www.davisnet.com/support/weather/download/VantageSerialProtocolDocs_v230.pdf
+// See ftp://ftp.visidyne.com/incoming/VantageSerialProtocolDocs_v230.pdf
 // The CRC is not included in the here but calculated on the fly.
 // WARNING: Many of the items below are not implemented!!!
 struct __attribute__((packed)) LoopPacket

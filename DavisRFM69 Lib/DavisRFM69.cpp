@@ -11,7 +11,7 @@
 // http://creativecommons.org/licenses/by-sa/3.0/
 
 #include <DavisRFM69.h>
-#include <../RFM69/RFM69registers.h>
+#include <RFM69registers.h>
 #include <SPI.h>
 
 volatile byte DavisRFM69::DATA[DAVIS_PACKET_LEN];
@@ -21,7 +21,7 @@ volatile byte DavisRFM69::CHANNEL = 0;
 volatile int DavisRFM69::RSSI;   // RSSI measured immediately after payload reception
 DavisRFM69* DavisRFM69::selfPointer;
 
-void DavisRFM69::initialize()
+bool DavisRFM69::initialize()
 {
   const byte CONFIG[][2] =
   {
@@ -73,11 +73,9 @@ void DavisRFM69::initialize()
     /* 0x71 */ { REG_TESTAFC, 0 }, // AFC Offset for low mod index systems
     {255, 0}
   };
-
+ 
+  digitalWrite(_slaveSelectPin, HIGH);
   pinMode(_slaveSelectPin, OUTPUT);
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setBitOrder(MSBFIRST);
-  SPI.setClockDivider(SPI_CLOCK_DIV2); //max speed, except on Due which can run at system clock speed
   SPI.begin();
 
   do writeReg(REG_SYNCVALUE1, 0xaa); while (readReg(REG_SYNCVALUE1) != 0xaa);
@@ -89,9 +87,10 @@ void DavisRFM69::initialize()
   setHighPower(_isRFM69HW); //called regardless if it's a RFM69W or RFM69HW
   setMode(RF69_MODE_STANDBY);
   while ((readReg(REG_IRQFLAGS1) & RF_IRQFLAGS1_MODEREADY) == 0x00); // Wait for ModeReady
-  attachInterrupt(0, DavisRFM69::isr0, RISING);
+  attachInterrupt(_interruptNum, DavisRFM69::isr0, RISING);
 
   selfPointer = this;
+  return true;
 }
 
 void DavisRFM69::interruptHandler() {
@@ -289,6 +288,9 @@ void DavisRFM69::writeReg(byte addr, byte value)
 /// Select the transceiver
 void DavisRFM69::select() {
   noInterrupts();
+  SPI.setDataMode(SPI_MODE0);
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setClockDivider(SPI_CLOCK_DIV4); // decided to slow down from DIV2 after SPI stalling in some instances, especially visible on mega1284p when RFM69 and FLASH chip both present
   digitalWrite(_slaveSelectPin, LOW);
 }
 
@@ -314,6 +316,7 @@ void DavisRFM69::setHighPowerRegs(bool onOff) {
 
 void DavisRFM69::setCS(byte newSPISlaveSelect) {
   _slaveSelectPin = newSPISlaveSelect;
+  digitalWrite(_slaveSelectPin, HIGH);
   pinMode(_slaveSelectPin, OUTPUT);
 }
 
