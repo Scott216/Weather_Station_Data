@@ -64,9 +64,11 @@ Change log:
                  Added watchdog timer for WU uplaod.  Can't use it for the radio because radio takes over 8 seconds to lock onto channels
                  30,086 bytes, RAM 423 bytes
 01/11/15 v0.43   Fixed Hautespot (router needed reboot).  Switch this sketch back to test weather station
+01/28/15 v0.44   Added formula for PACKET_INTERVAL.  Changed millis() to micros()/1000 for lastRxTime timer (See: http://bit.ly/1HoH5Hn )  
+
 */
 
-#define VERSION "v0.43" // version of this program
+#define VERSION "v0.44" // version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -327,7 +329,6 @@ void loop()
 // Read wireless data coming from Davis ISS weather station
 bool getWirelessData()
 {
-  
   static uint32_t lastRxTime = 0;  // timestamp of last received data.  Doesn't have to be good data
   static byte hopCount = 0;
   
@@ -355,7 +356,7 @@ bool getWirelessData()
     }
     
     // Whether CRC is right or not, we count that as reception and hop
-    lastRxTime = millis();
+    lastRxTime = micros()/1000UL;
     radio.hop();
   } // end if(radio.receiveDone())
   
@@ -363,23 +364,24 @@ bool getWirelessData()
   // in an attempt to keep up.  Give up after 25 failed attempts.  Keep track
   // of packet stats as we go.  I consider a consecutive string of missed
   // packets to be a single resync.  Thx to Kobuki for this algorithm.
-  const uint16_t PACKET_INTERVAL = 2555;
-  if ( (hopCount > 0) && ((millis() - lastRxTime) > (hopCount * PACKET_INTERVAL + 200)) )
+  // Formula for packet interval = (40 + STATION ID)/16 seconds.  ID is Davis ISS ID, default is 1 (which is 0 in packet data)
+  // See: http://www.wxforum.net/index.php?topic=24981.msg240797#msg240797
+  const uint16_t PACKET_INTERVAL = (40.0 + TRANSMITTER_STATION_ID)/16.0 * 1000.0; 
+  if ( (hopCount > 0) && (( (micros()/1000UL) - lastRxTime) > (hopCount * PACKET_INTERVAL + 200)) )
   {
     packetStats.packetsMissed++;
-    
     if (hopCount == 1)
     { packetStats.numResyncs++; }
     
     if (++hopCount > 25)
     { hopCount = 0; }
-    
     radio.hop();
   }
   
   return gotGoodData;
   
 } // end getWirelessData()
+
 
 //=============================================================================
 // Read the data from the ISS 
@@ -496,11 +498,9 @@ void processPacket()
   if ( gotTempData && gotHumidityData && gotRainData )
   { g_gotInitialWeatherData = true; }
   
-  
   #ifdef PRINT_DEBUG
     printData(rainSeconds);  // Print data, useful for debuggging
   #endif
-  
   
 } //  end processPacket()
 
@@ -670,7 +670,6 @@ bool uploadWeatherData()
 // Everything is in 0.01" units of rain
 void updateRainAccum()
 {
-  
   static byte newRain =         0; // incremental new rain since last bucket tip
   static byte prevRainCounter = 0; // previous ISS rain counter value
   
@@ -939,6 +938,7 @@ void printData(uint16_t rainSeconds)
   
 }  // end printData()
 
+
 void printRadioInfo()
 {
   // Print radio info
@@ -952,6 +952,7 @@ void printRadioInfo()
     Serial.println(radio.RSSI);
   }
 }  // end printRadioInfo()
+
 
 // print ISS data packet
 void printPacket()
@@ -1029,6 +1030,7 @@ void blink(byte pin, int DELAY_MS)
   delay(DELAY_MS);
   digitalWrite(pin, LOW);
 } // end blink()
+
 
 // Reboot
 void softReset()
