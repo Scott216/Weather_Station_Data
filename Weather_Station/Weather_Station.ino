@@ -13,6 +13,7 @@ Make moteino control power to Ethernet module so when it reboots, power is cycle
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
+ 
 I/O:
 A4,A5 - I2C communication with MPB180 sensor
 A0 - Rx Good LED (green) - good packet received by Moteino
@@ -65,10 +66,12 @@ Change log:
                  30,086 bytes, RAM 423 bytes
 01/11/15 v0.43   Fixed Hautespot (router needed reboot).  Switch this sketch back to test weather station
 01/28/15 v0.44   Added formula for PACKET_INTERVAL.  Changed millis() to micros()/1000 for lastRxTime timer (See: http://bit.ly/1HoH5Hn )  
+01/31/15 v0.45   Added windchill function
+03/21/15 v0.46   Added #ifdef to select MOTEINO_LED & SS_PIN_RADIO for Moteino or MoteinoMega
 
 */
 
-#define VERSION "v0.44" // version of this program
+#define VERSION "v0.46" // version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -140,13 +143,22 @@ float    g_windDirection_Now =  0;  // Instantanious wind direction, from 1 to 3
 uint16_t g_windDirection_Avg =  0;  // Average wind direction, from 1 to 360 degrees (0 = no wind data)
 bool     g_gotInitialWeatherData = false;  // flag to indicate when weather data is first received.  Used to prevent zeros from being uploaded to Weather Underground upon startup
 
+
 // I/O pins
 const byte RX_OK =           A0;  // LED flashes green every time Moteino receives a good packet
 const byte RX_BAD =          A1;  // LED flashes red every time Moteinoo receives a bad packet
 const byte TX_OK =            3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
-const byte MOTEINO_LED =      9;  // PCB LED on Moteino
-const byte SS_PIN_ETHERNET =  7;  // Slave select for Ethernet module
-const byte SS_PIN_MOTEINO =  10;  // Moteino slave select pin
+
+#ifdef __AVR_ATmega1284P__
+  const byte MOTEINO_LED =     15;  // Moteino MEGAs have LEDs on D15
+  const byte SS_PIN_RADIO =     4;  // Slave select for Radio
+  const byte SS_PIN_ETHERNET = 12;  // Slave select for Ethernet module
+#else
+  const byte MOTEINO_LED =       9;  // Moteinos have LEDs on D9
+  const byte SS_PIN_RADIO =     10;  // Slave select for Radio
+  const byte SS_PIN_ETHERNET =   7;  // Slave select for Ethernet module
+#endif
+
 
 // Used to track first couple of rain readings so initial rain counter can be set
 enum rainReading_t { NO_READING, FIRST_READING, AFTER_FIRST_READING };
@@ -175,6 +187,7 @@ bool   updateBaromoter();
 bool   updateInsideTemp();
 float  dewPointFast(float tempF, byte humidity);
 float  dewPoint(float tempf, byte humidity);
+float  windChill(float tempDegF, float windSpeedMPG);
 void   printFreeRam();
 void   printData(uint16_t rainSeconds);
 void   printRadioInfo();
@@ -229,9 +242,9 @@ void setup()
 
   // Enable internal pull-up resistors for SPI CS pins, ref: http://www.dorkbotpdx.org/blog/paul/better_spi_bus_design_in_3_steps
   pinMode(SS_PIN_ETHERNET, OUTPUT);
-  pinMode(SS_PIN_MOTEINO,  OUTPUT);
+  pinMode(SS_PIN_RADIO,  OUTPUT);
   digitalWrite(SS_PIN_ETHERNET, HIGH);
-  digitalWrite(SS_PIN_MOTEINO,  HIGH);
+  digitalWrite(SS_PIN_RADIO,  HIGH);
   delay(1);
 
   // Flash all LEDs
@@ -814,6 +827,20 @@ float dewPoint(float tempf, byte humidity)
   float T = log(VP/0.61078);
   return (241.88 * T) / (17.558-T);
 } // end dewPoint()
+
+
+// Wind Chill = 35.74 + 0.6215T - 35.75(V^0.16)+0.4275T(V^0.16)
+// Source: http://www.crh.noaa.gov/ddc/?n=windchill
+// V is wind speed in MPH
+// T is degrees F
+float windChill(float tempDegF, float windSpeedMPG)
+{
+  
+  float v2 = pow(windSpeedMPG, 0.16);   // http://arduino.cc/en/Reference/Pow
+  float windChillTempF = 35.74 + 0.6215 * tempDegF - 35.75 * v2 + (0.4275 * tempDegF) * v2;
+  return windChillTempF;
+  
+} // end windChill()
 
 
 // Format GMT Time the way weather underground wants
