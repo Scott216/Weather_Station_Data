@@ -6,9 +6,11 @@ Test weather station http://www.wunderground.com/personal-weather-station/dashbo
 
 To Do:
 Automatically switch to alternate time server if main one deosn't work
-Use WDT - program can hang after network problems.  Make sure WDT doesn't trigger while sketch is trying to set frequencies
 Print timestamp of Upload failures
+Print timestamp on reboot
+If can't upoad to WU, does davis data not get sent to serial monitor
 Make moteino control power to Ethernet module so when it reboots, power is cycled to module
+Try the updated libraries from DeKay: https://github.com/dekay/DavisRFM69
 
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
@@ -62,16 +64,16 @@ Change log:
 01/09/15 v0.40   Moved reboot address to byte 2 because it wrote 1831 times to address 0
 01/10/15 v0.41   Changed WU Station ID to from test station (KVTDOVER3) to the real station (KVTWESTD3)
 01/10/15 v0.42   Changed getUtcTime() to getTime and added parameter to return UTC or EST time
-                 Added watchdog timer for WU uplaod.  Can't use it for the radio because radio takes over 8 seconds to lock onto channels
+                 Added WDT (watch dog timer) for WU uplaod.  Can't use it for the radio because radio takes over 8 seconds to lock onto channels
                  30,086 bytes, RAM 423 bytes
 01/11/15 v0.43   Fixed Hautespot (router needed reboot).  Switch this sketch back to test weather station
 01/28/15 v0.44   Added formula for PACKET_INTERVAL.  Changed millis() to micros()/1000 for lastRxTime timer (See: http://bit.ly/1HoH5Hn )  
 01/31/15 v0.45   Added windchill function
 03/21/15 v0.46   Added #ifdef to select MOTEINO_LED & SS_PIN_RADIO for Moteino or MoteinoMega
-
+05/31/15 v0.47   Added delay in soft reboot so text could print to serial monitor
 */
 
-#define VERSION "v0.46" // version of this program
+#define VERSION "v0.47" // version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -333,6 +335,7 @@ void loop()
   if( (long) ( millis() - lastUploadTime ) > 1800000L )
   { 
     Serial.println(F("Reboot - No WU Upload"));
+    delay(1000);
     softReset(); 
   }
   
