@@ -12,7 +12,8 @@ Radio seems to have to re-sync frequency hopping timing a lot
 
 To Do:
 Try the updated libraries from DeKay: https://github.com/dekay/DavisRFM69
-Need to monitor low battery condition
+Add timestamp printout on startup and softreboot
+If we're not getting good packets from radio, is that printed to serial printer.  
 
 
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
@@ -78,9 +79,13 @@ Change log:
                  Changed getTime() to getFormattedTime()
                  Discovered problems I've been having were due to low battery in ISS tranmitter.  Changed transmitter ID from 3 to 1.
                  Changes to getTodayRain().  Added battery status and CRC errors to printData()
+                 Since Hautewind seems dead, I disconnected it and have this sketch pushing data to that station ID
+07/27/15 v0.50 - Sends message to serial monitor if no new data is coming through from ISS 
+08/02/15 v0.51 - New Dekay RFM69 library. https://github.com/dekay/DavisRFM69
+
 */
 
-#define VERSION "v0.49" // Version of this program
+#define VERSION "v0.51" // Version of this program
 #define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
 #define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
 
@@ -204,7 +209,7 @@ void   printIssPacket();
 void   blink(byte PIN, int DELAY_MS);
 bool   isNewDay();
 void getFormattedTime(char timebuf[], timezone_t timezone);
-bool refresthNtpTime();
+bool refreshNtpTime();
 time_t getNewNtpTime();
 time_t decodeNtpTime(IPAddress &address);
 void   sendNTPpacket(IPAddress &address, byte *packetBuff, int PACKET_SIZE);
@@ -330,7 +335,7 @@ void loop()
     heartBeatLedTimer = millis();
   }
   
-  refresthNtpTime(); // refreshes NTP time every 100 minutes
+  refreshNtpTime(); // refreshes NTP time every 100 minutes
   DateTime now = rtc.now();
   
   bool haveFreshWeatherData = getWirelessData();
@@ -354,12 +359,22 @@ void loop()
     
     uploadTimer = millis() + 60000; // set timer to upload again in 60 seconds
   }
+  else if ( isTimeToUpload && haveFreshWeatherData )
+  {
+    // sketch is not getting new data from radio, send message to serial monitor
+    #ifdef PRINT_DEBUG
+      char formatedDate[25];
+      getFormattedTime(formatedDate, ESTZONE); 
+      Serial.print(F("No new data from ISS, "));
+      Serial.println(formatedDate); 
+   #endif
+  }
   
   // Reboot if millis is close to rollover. RTC_Millis won't work properly if millis rolls over.  Takes 49 days to rollover
   if( millis() > 4294000000UL )
   { softReset(); }
 
-  // Reboot if no Weather Underground uploads in 30 minutes (1,800,000 mS) and  program is getting data from 
+  // Reboot if no Weather Underground uploads in 30 minutes (1,800,000 mS) and  program is getting data from radio
   // If device isn't getting data from Davis ISS, then it's not supposed to upload to Weather Underground
   if( ((long)( millis() - lastUploadTime ) > 1800000L ) && haveFreshWeatherData )
   { 
@@ -1054,7 +1069,7 @@ void getFormattedTime(char timebuf[], timezone_t timezone)
 //=============================================================================
 //  Refresh the NTP time once in a while
 //=============================================================================
-bool refresthNtpTime()
+bool refreshNtpTime()
 {
   const uint32_t REFRESH_DELAY = 6000000;  // Get NTP time again in 100 minutes
   static uint32_t refreshNTPTimeTimer = millis() + REFRESH_DELAY; // Timer used to determine when to get time from NTP time server
@@ -1073,7 +1088,7 @@ bool refresthNtpTime()
     else
     { return false; }
   }
-} // end refresthNtpTime()
+} // end refreshNtpTime()
   
 
 //=============================================================================
@@ -1107,7 +1122,7 @@ time_t getNewNtpTime()
       }
     } // end cnt loop, try same server again
 
-  } // end server looop, try next server
+  } // end server loop, try next server
   
   return 0;  // All attempts failed
 
