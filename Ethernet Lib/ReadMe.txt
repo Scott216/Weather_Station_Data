@@ -6,12 +6,14 @@ C:\Program Files(x86)\Arduino\libraries\Ethernet\
 C:\Program Files(x86)\Arduino\libraries\Ethernet\utility\ 
 
 Mac:
-/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/ 
-/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/utility/ 
+/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/src/ 
+/Applications/Arduino.app (show pkg contents) /Contents/Resources/Java/libraries/Ethernet/src/utility/ 
 
 Slave select modification by SurferTim.  See Arduino forum post
 http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
-Use as follows
+
+
+Use as follows:
 
 #define SS_PIN 8
 pinMode(SS_PIN, OUTPUT);
