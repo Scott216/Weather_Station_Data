@@ -1,18 +1,27 @@
 /*
 Board type: 
-Moteino - if using IDE 1.0.x use Una as board type.  If using IDE 1.6.x, then use Moteino or MoteinoMega
+Moteino or MoteinoMega
+To add Moteino to board list, in Arduino preferences, enter this URL
+https://lowpowerlab.github.io/MoteinoCore/package_LowPowerLab_index.json
+
+Changes to w5100 library so you can change slave select pin;
+https://github.com/Scott216/Ethernet_SS_Mod
+
+You can check for MoteinoMega using the following check in w5100.h:
+    #elif defined(__AVR_ATmega1284P__)  
+
 
 See Github repository for more information: http://git.io/Ds7oxw
 Test weather station   http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTDOVER3
-Normal weather station http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTWESTD3
+Suntec weather station http://www.wunderground.com/personal-weather-station/dashboard?ID=KVTWESTD3
+
+Weather Underground Wiki: http://wiki.wunderground.com/index.php/PWS_-_Upload_Protocol#GET_parameters
 
 Issues:
-NTP server frequently doesn't work in the first try normally just the 2nd
 Radio seems to have to re-sync frequency hopping timing a lot
 
 To Do:
-Try the updated libraries from DeKay: https://github.com/dekay/DavisRFM69
-Add timestamp printout on startup and softreboot
+Only using NTP time to figure out if it's a new day. If time can be extracted from HTTP response, then UDP code can be removed.
 If we're not getting good packets from radio, is that printed to serial printer.  
 
 
@@ -82,12 +91,18 @@ Change log:
                  Since Hautewind seems dead, I disconnected it and have this sketch pushing data to that station ID
 07/27/15 v0.50 - Sends message to serial monitor if no new data is coming through from ISS 
 08/02/15 v0.51 - New Dekay RFM69 library. https://github.com/dekay/DavisRFM69
-
+02/03/17 v0.52 - I think WU changed servers to AWS, now uploads don't work.  Fetching daily rain was returning huge numbers, so I set to zero if it's over 10 inches.  
+                 Also added print statement when data is uploaded to WU
+12/20/17 v0.53 - Changed how NTP works. Instead of using IP addresses for time server, using char timeServer[] = "time.nist.gov";  
+12/21/17 v0.54 - Found forum post that explained GET request changes. https://forum.arduino.cc/index.php?topic=461649.msg3199335#msg3199335
+12/21/17 v0.55 - Little bit of code cleanup, took out some of the debugging.  Switched back to main staion from test station.
 */
 
-#define VERSION "v0.51" // Version of this program
-#define PRINT_DEBUG     // comment out to remove many of the Serial.print() statements
-#define PRINT_DEBUG_WU_UPLOAD // prints out messages related to Weather Underground upload.  Comment out to turn off
+#define VERSION "v0.55" // Version of this program
+// #define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
+// #define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
+#define PRINT_SETUP_INFO   // Prints which Moteino selected, reboots and free RAM from setip().  Comment out to turn off
+
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
 #include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
@@ -103,10 +118,10 @@ Change log:
 #include "Tokens.h"            // Holds Weather Underground password
 
 
-//#define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID - test station
+// #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID - test station
 #define WUNDERGROUND_STATION_ID "KVTWESTD3" // Weather Underground station ID - normal station
 const float ALTITUDE = 603.0;               // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
-const byte TRANSMITTER_STATION_ID = 1;      // ISS station ID to be monitored.  Default station ID is normally 1
+const byte TRANSMITTER_STATION_ID = 1;      // Davis ISS station ID to be monitored.  Default station ID is normally 1
 
 // Reduce number of bogus compiler warnings, see http://bit.ly/1pU6XMe
 #undef PROGMEM
@@ -130,20 +145,19 @@ const byte TRANSMITTER_STATION_ID = 1;      // ISS station ID to be monitored.  
 #define ISS_HUMIDITY     0xA
 #define ISS_RAIN         0xE
 
-char g_server [] = "weatherstation.wunderground.com";  // standard weather underground server for upload
+// char g_server [] = "weatherstation.wunderground.com";  // standard weather underground server for upload
+char g_server[] = "rtupdate.wunderground.com";   // Realtime update server - RapidFire
 char g_API_server[] =         "api.wunderground.com";  // API server used to get WU data
 
 // NTP Time Servers 
-const byte NUM_NTP_SERVERS = 4; 
-IPAddress g_timeServerIP[NUM_NTP_SERVERS] = { IPAddress(132, 163,   4, 101),  // http://ntp1.nl.net 
-                                              IPAddress(129,   6,  15,  28),  // http://tf.nist.gov/tf-cgi/servers.cgi
-                                              IPAddress(132, 163,   4, 102),  // http://time-b.timefreq.bldrdoc.gov 
-                                              IPAddress(132, 163,   4, 103)  
-                                            };
+char g_timeServer[] = "time.nist.gov";
 
 // Etherent setup
-byte g_mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 };
-byte g_ip[] = { 192, 168, 46, 85 };   // Static IP on LAN
+byte g_mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 }; // Moteino Ethernet board
+// byte g_mac[] = { 0x90, 0xA2, 0xDA, 0x00, 0xFD, 0x18 }; // Moteino mega Ethernet board
+byte g_ip[] =  { 192, 168, 46, 85 };  // Vermont
+// byte g_ip[] =  { 192, 168, 130, 50 };  // Melrose
+
 
 // Weather data to send to Weather Underground
 byte     g_rainCounter =        0;  // rain data sent from outside weather station.  1 = 0.01".  Just counts up to 127 then rolls over to zero
@@ -166,12 +180,14 @@ const byte RX_OK =    A0;  // LED flashes green every time Moteino receives a go
 const byte RX_BAD =   A1;  // LED flashes red every time Moteinoo receives a bad packet
 const byte TX_OK =     3;  // LED flashed green when data is sucessfully uploaed to Weather Underground
 
+const uint16_t UPLOAD_FREQ_SEC = 60; // Upload every 60 seconds
+
 #ifdef __AVR_ATmega1284P__
-  const byte MOTEINO_LED =      15;  // Moteino MEGAs have LEDs on D15
+  const byte MOTEINO_LED =      15;  // Moteino MEGA has LED on D15
   const byte SS_PIN_RADIO =      4;  // Slave select for Radio
   const byte SS_PIN_ETHERNET =  12;  // Slave select for Ethernet module
 #else
-  const byte MOTEINO_LED =       9;  // Moteinos have LEDs on D9
+  const byte MOTEINO_LED =       9;  // Moteino has LED on D9
   const byte SS_PIN_RADIO =     10;  // Slave select for Radio
   const byte SS_PIN_ETHERNET =   7;  // Slave select for Ethernet module
 #endif
@@ -211,8 +227,8 @@ bool   isNewDay();
 void getFormattedTime(char timebuf[], timezone_t timezone);
 bool refreshNtpTime();
 time_t getNewNtpTime();
-time_t decodeNtpTime(IPAddress &address);
-void   sendNTPpacket(IPAddress &address, byte *packetBuff, int PACKET_SIZE);
+time_t decodeNtpTime(char* address);
+void   sendNTPpacket(char* address, byte *packetBuff, int PACKET_SIZE);
 void   softReset();
 
 
@@ -260,7 +276,7 @@ void setup()
   digitalWrite(SS_PIN_RADIO,  HIGH);
   delay(1);
 
-  // Flash all LEDs
+  // Flash all LEDs to indicate startup
   for (int i = 0; i < 10; i++)
   {
     digitalWrite(MOTEINO_LED, !digitalRead(MOTEINO_LED));
@@ -271,18 +287,20 @@ void setup()
   }
       
   // Setup Ethernet
-  Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h library
+  Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h/ccp and w5100.h/cpp files
+  unsigned int localPort = 8888;     // Local port to listen for UDP packets
   Ethernet.begin(g_mac, g_ip);  
-  Udp.begin(8888);  // local port 8888 to listen for UDP packet for NTP time server
+  Udp.begin(localPort);  // local port 8888 to listen for UDP packet for NTP time server
   delay(2000); 
   
-  #ifdef PRINT_DEBUG
+  #ifdef PRINT_SETUP_INFO
     Serial.print(F("Weather Station "));
     Serial.println(VERSION);
-    if ( SS_PIN_ETHERNET == 7 )
-    { Serial.println(F("Using regular Moteino")); }
-    else
-    { Serial.println(F("Using MoteinoMega")); }    
+    #ifdef __AVR_ATmega1284P__
+      { Serial.println(F("Using Moteino Mega")); }   
+    #else
+      { Serial.println(F("Using regular Moteino")); }
+    #endif 
     Serial.print(F("Reboots = "));
     Serial.println(Reboot_Counter);
     Serial.println(Ethernet.localIP());
@@ -302,7 +320,6 @@ void setup()
     getTodayRain();
   }
 
-
   // Set up BMP085 pressure and temperature sensor
   if (!bmp.begin())
   { 
@@ -315,10 +332,10 @@ void setup()
   radio.initialize();
   radio.setChannel(0); // Frequency - Channel is *not* set in the initialization. Need to do it now
 
-  #ifdef PRINT_DEBUG
+  #ifdef PRINT_SETUP_INFO
     printFreeRam();
     Serial.println();
- #endif
+  #endif
 
 }  // end setup()
 
@@ -347,7 +364,7 @@ void loop()
   bool isNptTimeOk = (now.year() >= 2014);
   if( isTimeToUpload && isNptTimeOk && haveFreshWeatherData && g_gotInitialWeatherData )
   {
-    // Get data that's not from outside weather station
+    // Get data that's not from outside weather station - baramoter and inside temp
     g_dewpoint = dewPoint( (float)g_outsideTemperature/10.0, g_outsideHumidity);
     updateBaromoter();  
     updateInsideTemp();
@@ -357,7 +374,7 @@ void loop()
     { lastUploadTime = millis(); }  // If upload was successful, save timestamp
     wdt_disable();    
     
-    uploadTimer = millis() + 60000; // set timer to upload again in 60 seconds
+    uploadTimer = millis() + (UPLOAD_FREQ_SEC * 1000); // set timer to upload again in UPLOAD_FREQ_SEC seconds
   }
   else if ( isTimeToUpload && haveFreshWeatherData )
   {
@@ -593,6 +610,8 @@ bool getTodayRain()
     if(finder.find("precip_today_in"))
     {
       g_dayRain = finder.getFloat() * 100.0; // convert to 1/100 inch
+      if (g_dayRain > 1000)  // srg debug - 2/3/17 finder.getFlaot is returning big values, don't know why
+      { g_dayRain  = 0;}  
       #ifdef PRINT_DEBUG
         Serial.print(F("Daily Rain Start = "));
         Serial.println(g_dayRain);
@@ -634,8 +653,7 @@ bool uploadWeatherData()
     client.print(WUNDERGROUND_STATION_ID);
     client.print("&PASSWORD=");
     client.print(WUNDERGROUND_PWD);
-    client.print("&dateutc=");
-    client.print(formatedDate);
+    client.print("&dateutc=now");
     client.print("&winddir=");
     client.print(g_windDirection_Avg);
     client.print("&windspeedmph=");
@@ -671,7 +689,9 @@ bool uploadWeatherData()
     client.print("&softwaretype=Arduino%20Moteino");
     client.print(VERSION);
     client.print("&action=updateraw");
-    client.println();
+    client.print("&realtime=1&rtfreq=");  // Need when uploading to RapidFire server
+    client.print(UPLOAD_FREQ_SEC);        // Tell Rapidfire how ofter data will be uploaded (seconds)
+    client.println("/ HTTP/1.1\r\nHost: host:port\r\nConnection: close\r\n\r\n"); // See forum post https://forum.arduino.cc/index.php?topic=461649.msg3199335#msg3199335
   }
   else
   {
@@ -694,7 +714,7 @@ bool uploadWeatherData()
       char c = client.read();
       connectLoopCounter = 0;  // reset loop counter
       #ifdef PRINT_DEBUG_WU_UPLOAD
-        Serial.print(c);
+        Serial.print(c);  
       #endif
     }  
     
@@ -958,6 +978,7 @@ void printFreeRam()
 //=============================================================================
 void printData(uint16_t rainSeconds)
 {
+#ifdef PRINT_DEBUG  
   static uint32_t timeElapsed = millis(); // time elapsed since last tiem printData() was called.  Pretty much the same as time between data packets received
   static byte headerCounter = 0;
   
@@ -1000,15 +1021,15 @@ void printData(uint16_t rainSeconds)
   Serial.println();
   
   timeElapsed = millis(); // save new timestamp
-  
+#endif 
 }  // end printData()
-
+ 
 
 //=============================================================================
 // Prints info about the radio 
 //=============================================================================
 void printRadioInfo()
-{
+{ 
   // Print radio info
   if ( g_initialRainReading == FIRST_READING)
   {
@@ -1018,7 +1039,7 @@ void printRadioInfo()
     Serial.print(radio.CHANNEL);
     Serial.print(F("\tRSSI: "));
     Serial.println(radio.RSSI);
-  }
+  } 
 }  // end printRadioInfo()
 
 
@@ -1092,39 +1113,36 @@ bool refreshNtpTime()
   
 
 //=============================================================================
-//  Loops through the NTP servers until it gets the time from one of them
+//  Connect to timeserver
 //=============================================================================
 time_t getNewNtpTime()
 {
-  time_t t = 0;
-  // loop through servers
-  for (byte server = 0; server < NUM_NTP_SERVERS; server++) 
-  {
-    // Try each server 3 times
+
+ time_t t = 0;
+
+    // Try up to 3 times to get time
     for (byte cnt = 0; cnt < 3; cnt++)
     {
-      t = decodeNtpTime(g_timeServerIP[server]);
+      t = decodeNtpTime(g_timeServer);
       if ( t != 0 )
       { 
         #ifdef PRINT_DEBUG
-          Serial.print(F("Got NTP time on server "));
-          Serial.println(server); 
+          Serial.println(F("Got NTP time"));
         #endif
         return t;
       }
-      else  // didn't get NTP time, try again
-      { 
+      else
+      { // didn't get teim
         #ifdef PRINT_DEBUG
-          Serial.print(F("Didn't get NTP time on server "));
-          Serial.println(server); 
+          Serial.println(F("Didn't get NTP time"));
         #endif
-        delay(2000); 
+        if (cnt < 2)
+        { delay(2000); }
       }
-    } // end cnt loop, try same server again
-
-  } // end server loop, try next server
-  
-  return 0;  // All attempts failed
+    } // cnt
+ 
+   return 0;  // Didn't get time
+ 
 
 } // end getNewNtpTime()
 
@@ -1132,7 +1150,7 @@ time_t getNewNtpTime()
 //=============================================================================
 // Decodes time from NTP server
 //=============================================================================
-time_t decodeNtpTime(IPAddress &address)
+time_t decodeNtpTime(char* address)
 {
   const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
   byte packetBuffer[NTP_PACKET_SIZE]; // buffer to hold incoming & outgoing packets
@@ -1166,10 +1184,10 @@ time_t decodeNtpTime(IPAddress &address)
 //=============================================================================
 // send an NTP request to the time server at the given address
 //=============================================================================
-void sendNTPpacket(IPAddress &address, byte *packetBuff, int PACKET_SIZE)
+void sendNTPpacket(char* address, byte *packetBuff, int packetSize)  
 {
   // set all bytes in the buffer to 0
-  memset(packetBuff, 0, PACKET_SIZE);
+  memset(packetBuff, 0, packetSize);
   // Initialize values needed to form NTP request
   packetBuff[0] = 0b11100011;   // LI, Version, Mode
   packetBuff[1] = 0;     // Stratum, or type of clock
@@ -1183,7 +1201,7 @@ void sendNTPpacket(IPAddress &address, byte *packetBuff, int PACKET_SIZE)
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
   Udp.beginPacket(address, 123); // NTP requests are to port 123
-  Udp.write(packetBuff, PACKET_SIZE);
+  Udp.write(packetBuff, packetSize);
   Udp.endPacket();
 } // end sendNTPpacket()
 
@@ -1206,6 +1224,7 @@ void softReset()
 {
   asm volatile("  jmp 0");
 }  // end softReset()
+
 
 
 
