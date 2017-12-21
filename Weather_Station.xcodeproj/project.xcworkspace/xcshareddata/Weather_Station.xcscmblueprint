@@ -1,0 +1,51 @@
+{
+  "DVTSourceControlWorkspaceBlueprintPrimaryRemoteRepositoryKey" : "C154B6C7A7B539C82143163493CF76441B88BFEE",
+  "DVTSourceControlWorkspaceBlueprintWorkingCopyRepositoryLocationsKey" : {
+
+  },
+  "DVTSourceControlWorkspaceBlueprintWorkingCopyStatesKey" : {
+    "A36476684435ACFDE4593511150A7FED3EEFBDC6" : 0,
+    "C154B6C7A7B539C82143163493CF76441B88BFEE" : 0,
+    "B5A57DA1126671A82A8A51A13EF62D39B0A73A75" : 0,
+    "3E8911BD2A8F7260F1E20562A37939D4D604B369" : 0,
+    "D96C9AAAF3939DE85067FAC0C8F26DFFD07AE486" : 0
+  },
+  "DVTSourceControlWorkspaceBlueprintIdentifierKey" : "B99A0A78-2851-4B35-A17B-56CDBC3FC634",
+  "DVTSourceControlWorkspaceBlueprintWorkingCopyPathsKey" : {
+    "A36476684435ACFDE4593511150A7FED3EEFBDC6" : "libraries\/",
+    "C154B6C7A7B539C82143163493CF76441B88BFEE" : "Weather_Station\/",
+    "B5A57DA1126671A82A8A51A13EF62D39B0A73A75" : "libraries\/Adafruit_LEDBackpack_I2cLib\/",
+    "3E8911BD2A8F7260F1E20562A37939D4D604B369" : "libraries\/RTCLib_DSSI2C\/",
+    "D96C9AAAF3939DE85067FAC0C8F26DFFD07AE486" : "libraries\/SSD1306_I2C_DSS\/"
+  },
+  "DVTSourceControlWorkspaceBlueprintNameKey" : "Weather_Station",
+  "DVTSourceControlWorkspaceBlueprintVersion" : 204,
+  "DVTSourceControlWorkspaceBlueprintRelativePathToProjectKey" : "Weather_Station.xcodeproj",
+  "DVTSourceControlWorkspaceBlueprintRemoteRepositoriesKey" : [
+    {
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryURLKey" : "https:\/\/github.com\/Scott216\/RTCLib_wo_wire",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositorySystemKey" : "com.apple.dt.Xcode.sourcecontrol.Git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryIdentifierKey" : "3E8911BD2A8F7260F1E20562A37939D4D604B369"
+    },
+    {
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryURLKey" : "https:\/\/github.com\/Scott216\/Arduino_Libraries",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositorySystemKey" : "com.apple.dt.Xcode.sourcecontrol.Git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryIdentifierKey" : "A36476684435ACFDE4593511150A7FED3EEFBDC6"
+    },
+    {
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryURLKey" : "https:\/\/github.com\/Scott216\/Adafruit-LED-Backpack-Library-I2C.git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositorySystemKey" : "com.apple.dt.Xcode.sourcecontrol.Git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryIdentifierKey" : "B5A57DA1126671A82A8A51A13EF62D39B0A73A75"
+    },
+    {
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryURLKey" : "http:\/\/github.com\/Scott216\/Weather_Station_Data.git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositorySystemKey" : "com.apple.dt.Xcode.sourcecontrol.Git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryIdentifierKey" : "C154B6C7A7B539C82143163493CF76441B88BFEE"
+    },
+    {
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryURLKey" : "https:\/\/github.com\/Scott216\/SSD1306_I2C_DSS",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositorySystemKey" : "com.apple.dt.Xcode.sourcecontrol.Git",
+      "DVTSourceControlWorkspaceBlueprintRemoteRepositoryIdentifierKey" : "D96C9AAAF3939DE85067FAC0C8F26DFFD07AE486"
+    }
+  ]
+}
