@@ -28,18 +28,19 @@ If we're not getting good packets from radio, is that printed to serial printer.
 Note: It can take a while for the radio to start receiving packets, I think it's figuring out the frequency hopping or something
  
  
-I/O:
+I/O for Moteina (Mega might be different):
 A4,A5 - I2C communication with MPB180 sensor
 A0 - Rx Good LED (green) - good packet received by Moteino
 A1 - Rx Bad LED (red) - bad packet received by Moteino
 D3 - Tx Good LED (green) - good upload to weather underground
-D7 - Slave select for Ethernet module
+D7 - Slave select for Ethernet module. For port registers, this is Port D, bit 7 on Moteino, not sure about MoteinoMega
 D8 - Slave Select for Flash chip if  you got the Flash chip option on your Moteino
 D9  LED mounted on the Moteino PCB 
-D2, D10-13 - used by Moteino transciever
+D2, D10-13 - used by Moteino radio transciever. D10 is radio slave select
+
 
 Change log:
-07/23/14 v0.12 - fixed isNewDay bug.  Averaged wind data and increased wind gust period to 5 minutes.  
+07/23/14 v0.12 - Fixed isNewDay bug.  Averaged wind data and increased wind gust period to 5 minutes.  
 07/24/14 v0.13 - Changed rainRate calculation, looks at 5 minutes instead on an hour, added station ID check
 07/25/14 v0.14 - Enabled BPM180 for pressure and inside temp
 07/28/14 v0.15 - Moved Tx Ok LED from D2 to D3.  D2 is used by transciever
@@ -96,16 +97,20 @@ Change log:
 12/20/17 v0.53 - Changed how NTP works. Instead of using IP addresses for time server, using char timeServer[] = "time.nist.gov";  
 12/21/17 v0.54 - Found forum post that explained GET request changes. https://forum.arduino.cc/index.php?topic=461649.msg3199335#msg3199335
 12/21/17 v0.55 - Little bit of code cleanup, took out some of the debugging.  Switched back to main staion from test station.
+12/22/17 v0.56 - Added #ifdef __AVR_ATmega328P__ to check for Moteino board type.  Compile Size: 28,596 bytes & 1584 bytes RAM
+12/22/17 v0.57 - Tyring out kiwisincebrith's w5100.h/cpp files.  His version doesn't change Ethernet.h/cpp.  
+                 Added print statement when getting invalid rain data from WU and textfinder. Compile size 28,556, 1582 dynamic (with only setup printing)
 */
 
-#define VERSION "v0.55" // Version of this program
-// #define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
-// #define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
+#define VERSION "v0.57" // Version of this program
+//#define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
+//#define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
 #define PRINT_SETUP_INFO   // Prints which Moteino selected, reboots and free RAM from setip().  Comment out to turn off
 
 
 #include <DavisRFM69.h>        // http://github.com/dekay/DavisRFM69
-#include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts  
+#include <Ethernet.h>          // Modified for user selectable SS pin and disables interrupts
+#include <utility/W5100.h>     // Needed when using modified w5100.h files from kiwisincebirth
 #include <EthernetUdp.h>       // http://github.com/arduino/Arduino/blob/master/libraries/Ethernet/src/EthernetUdp.h
 #include <SPI.h>               // DavisRFM69.h needs this   http://arduino.cc/en/Reference/SPI
 #include <Wire.h>              // http://github.com/arduino/Arduino/tree/master/libraries/Wire
@@ -113,8 +118,8 @@ Change log:
 #include "RTClib.h"            // http://github.com/adafruit/RTClib
 #include "Adafruit_BMP085_U.h" // http://github.com/adafruit/Adafruit_BMP085_Unified
 #include "Adafruit_Sensor.h"   // http://github.com/adafruit/Adafruit_Sensor
-#include <TextFinder.h>        // http://playground.arduino.cc/Code/TextFinder
-#include <avr/wdt.h>           // Watchdog timeout
+#include <TextFinder.h>        // http://playground.arduino.cc/Code/TextFinder (used in getTodayRain() from WU response)
+#include <avr/wdt.h>           // Watchdog timeout.  Increases progam size by 64 bytes. I din't think it helps much
 #include "Tokens.h"            // Holds Weather Underground password
 
 
@@ -182,11 +187,14 @@ const byte TX_OK =     3;  // LED flashed green when data is sucessfully uploaed
 
 const uint16_t UPLOAD_FREQ_SEC = 60; // Upload every 60 seconds
 
-#ifdef __AVR_ATmega1284P__
+#if defined(__AVR_ATmega1284P__)
+  // Moteino Mega
   const byte MOTEINO_LED =      15;  // Moteino MEGA has LED on D15
   const byte SS_PIN_RADIO =      4;  // Slave select for Radio
   const byte SS_PIN_ETHERNET =  12;  // Slave select for Ethernet module
-#else
+  const byte SS_PIN_MICROSD =   13;  // SS pin for micro SD card
+#elif defined(__AVR_ATmega328P__)
+  // Standard Moteino
   const byte MOTEINO_LED =       9;  // Moteino has LED on D9
   const byte SS_PIN_RADIO =     10;  // Slave select for Radio
   const byte SS_PIN_ETHERNET =   7;  // Slave select for Ethernet module
@@ -287,7 +295,9 @@ void setup()
   }
       
   // Setup Ethernet
-  Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h/ccp and w5100.h/cpp files
+  //Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h/ccp and w5100.h/cpp files
+  W5100.select(SS_PIN_ETHERNET);  // srg12 - uncomment when trying kiwisincebirth files 
+   
   unsigned int localPort = 8888;     // Local port to listen for UDP packets
   Ethernet.begin(g_mac, g_ip);  
   Udp.begin(localPort);  // local port 8888 to listen for UDP packet for NTP time server
@@ -296,16 +306,10 @@ void setup()
   #ifdef PRINT_SETUP_INFO
     Serial.print(F("Weather Station "));
     Serial.println(VERSION);
-    #ifdef __AVR_ATmega1284P__
-      { Serial.println(F("Using Moteino Mega")); }   
-    #else
-      { Serial.println(F("Using regular Moteino")); }
-    #endif 
     Serial.print(F("Reboots = "));
     Serial.println(Reboot_Counter);
     Serial.println(Ethernet.localIP());
   #endif
-  
   
   // Get time from NTP time server and start real time clock
   time_t t = getNewNtpTime();  
@@ -611,7 +615,12 @@ bool getTodayRain()
     {
       g_dayRain = finder.getFloat() * 100.0; // convert to 1/100 inch
       if (g_dayRain > 1000)  // srg debug - 2/3/17 finder.getFlaot is returning big values, don't know why
-      { g_dayRain  = 0;}  
+      { 
+        g_dayRain  = 0;
+        #ifdef PRINT_DEBUG
+          Serial.println(F("Invalid rain date from WU, setting to 0")); 
+        #endif
+      }  
       #ifdef PRINT_DEBUG
         Serial.print(F("Daily Rain Start = "));
         Serial.println(g_dayRain);
