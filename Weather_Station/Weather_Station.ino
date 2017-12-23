@@ -88,7 +88,7 @@ Change log:
 07/09/15 v0.49 - Changed processPacket() to decodePacket().  Changed getNtpTime to decodeNTPTime.  Changed getNewNtpTime to loop 3 times for each server
                  Changed getTime() to getFormattedTime()
                  Discovered problems I've been having were due to low battery in ISS tranmitter.  Changed transmitter ID from 3 to 1.
-                 Changes to getTodayRain().  Added battery status and CRC errors to printData()
+                 Changes to getTodayRain(). Added battery status and CRC errors to printData()
                  Since Hautewind seems dead, I disconnected it and have this sketch pushing data to that station ID
 07/27/15 v0.50 - Sends message to serial monitor if no new data is coming through from ISS 
 08/02/15 v0.51 - New Dekay RFM69 library. https://github.com/dekay/DavisRFM69
@@ -100,11 +100,15 @@ Change log:
 12/22/17 v0.56 - Added #ifdef __AVR_ATmega328P__ to check for Moteino board type.  Compile Size: 28,596 bytes & 1584 bytes RAM
 12/22/17 v0.57 - Tyring out kiwisincebrith's w5100.h/cpp files.  His version doesn't change Ethernet.h/cpp.  
                  Added print statement when getting invalid rain data from WU and textfinder. Compile size 28,556, 1582 dynamic (with only setup printing)
+12/23/17 v0.58 - Added print statements to where WDT turns on and off to try and see where sketch is hanging.  
+                 Modified getTodayRain() to print when textfinder fails. Added for loop to call getTodayRain() up to 10 times
+                 Changed NTP time tries from 3 to 20 
+
 */
 
-#define VERSION "v0.57" // Version of this program
-//#define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
-//#define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
+#define VERSION "v0.58" // Version of this program
+#define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
+#define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
 #define PRINT_SETUP_INFO   // Prints which Moteino selected, reboots and free RAM from setip().  Comment out to turn off
 
 
@@ -155,7 +159,8 @@ char g_server[] = "rtupdate.wunderground.com";   // Realtime update server - Rap
 char g_API_server[] =         "api.wunderground.com";  // API server used to get WU data
 
 // NTP Time Servers 
-char g_timeServer[] = "time.nist.gov";
+char g_timeServer1[] = "time.nist.gov";
+char g_timeServer2[] = "utcnist.colorado.edu";
 
 // Etherent setup
 byte g_mac[] = { 0xDE, 0xAD, 0xBD, 0xAA, 0xAB, 0xA4 }; // Moteino Ethernet board
@@ -295,8 +300,7 @@ void setup()
   }
       
   // Setup Ethernet
-  //Ethernet.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified Ethernet.h/ccp and w5100.h/cpp files
-  W5100.select(SS_PIN_ETHERNET);  // srg12 - uncomment when trying kiwisincebirth files 
+  W5100.select(SS_PIN_ETHERNET);  // Set slave select pin - requires modified w5100.h/cc 
    
   unsigned int localPort = 8888;     // Local port to listen for UDP packets
   Ethernet.begin(g_mac, g_ip);  
@@ -316,12 +320,12 @@ void setup()
   if ( t != 0 )
   { rtc.begin(DateTime(t)); }
 
-  // Read the current daily rain accumulation from Weather Underground
-  if ( !getTodayRain() )
-  { 
-    // try again
-    delay(2000);
-    getTodayRain();
+  // Read the current daily rain accumulation from Weather Underground so program has the right starting point
+  for (byte iGetRain = 0; iGetRain < 10; iGetRain++)
+  { if ( !getTodayRain() )
+    { delay(3000);} // didn't get rain data, wait then try again
+    else
+    { break; } // got rain data, exit the for loop
   }
 
   // Set up BMP085 pressure and temperature sensor
@@ -374,9 +378,13 @@ void loop()
     updateInsideTemp();
     
     wdt_enable(WDTO_8S); // Turn watchdog on - only want it running for Ethernet upload.  Can't use it for radio because it would reset when frequency hopping
+    Serial.print(F("WDT On "));
+    Serial.println("1");
     if( uploadWeatherData() )       // Upload weather data
     { lastUploadTime = millis(); }  // If upload was successful, save timestamp
-    wdt_disable();    
+    wdt_disable(); 
+    Serial.print(F("WDT Off "));
+    Serial.println("2");
     
     uploadTimer = millis() + (UPLOAD_FREQ_SEC * 1000); // set timer to upload again in UPLOAD_FREQ_SEC seconds
   }
@@ -599,10 +607,12 @@ bool getTodayRain()
 {
   TextFinder finder( client );
   float rainToday = 0.0;
-  
+  Serial.println(F("Get rain data")); //srg12 debug
   if (client.connect(g_API_server, 80))
   {
+    Serial.println(F("Connected to API server"));  //srg12  debug
     // Make a HTTP request:
+    // other station client.println(F("GET /api/cb0578a32efb0c50/conditions/q/pws:KVTREADS4.json HTTP/1.1"));
     client.println(F("GET /api/cb0578a32efb0c50/conditions/q/pws:KVTWESTD3.json HTTP/1.1"));
     client.println(F("Host: api.wunderground.com"));
     client.println(F("Connection: close"));
@@ -618,8 +628,10 @@ bool getTodayRain()
       { 
         g_dayRain  = 0;
         #ifdef PRINT_DEBUG
-          Serial.println(F("Invalid rain date from WU, setting to 0")); 
+          Serial.println(F("Invalid rain data from WU, setting to 0")); 
         #endif
+        client.stop();
+        return false;
       }  
       #ifdef PRINT_DEBUG
         Serial.print(F("Daily Rain Start = "));
@@ -628,8 +640,16 @@ bool getTodayRain()
       client.stop();
       return true;
     }
-  }
-  else
+    else  // Textfinder didn't find precip_today_in string json repsonse
+    {
+      #ifdef PRINT_DEBUG
+        Serial.println(F("TextFinder failed"));
+      #endif
+      client.stop();
+      return false;
+    }
+  }  
+  else // Client connection failed
   { 
     #ifdef PRINT_DEBUG
       Serial.println(F("Did not get rain data")); 
@@ -654,10 +674,17 @@ bool uploadWeatherData()
   getFormattedTime(formatedDate, UTCZONE);  
   
   wdt_reset();
-  
+  Serial.print(F("WDT Rst "));
+  Serial.println("3");
+
   // Send the Data to weather underground
   if (client.connect(g_server, 80))
   {
+    #ifdef PRINT_DEBUG_WU_UPLOAD
+      Serial.print(F("Connected to: "));
+      Serial.println(g_server);  
+    #endif
+    
     client.print("GET /weatherstation/updateweatherstation.php?ID=");
     client.print(WUNDERGROUND_STATION_ID);
     client.print("&PASSWORD=");
@@ -715,7 +742,9 @@ bool uploadWeatherData()
   uint32_t lastRead = millis();
   uint32_t connectLoopCounter = 0;  // used to timeout ethernet connection 
   wdt_reset();
-  
+  Serial.print(F("WDT Rst "));
+  Serial.println("4");
+
   while (client.connected() && (millis() - lastRead < 1000))  // wait up to one second for server response
   {
     while (client.available()) 
@@ -742,6 +771,8 @@ bool uploadWeatherData()
   }  // end while (client.connected() )
   
   wdt_reset();
+  Serial.print(F("WDT Rst "));
+  Serial.println("5");
   
   client.stop();
   blink(TX_OK, 50);
@@ -761,6 +792,9 @@ bool uploadWeatherData()
   #endif
   
   wdt_reset();
+  Serial.print(F("WDT Rst "));
+  Serial.println("6");
+
   return true;
   
 } // end uploadWeatherData()
@@ -1123,36 +1157,55 @@ bool refreshNtpTime()
 
 //=============================================================================
 //  Connect to timeserver
+//  time_t is epoch time format
+// Dec 23, 2017 11:30 AM =  1514046516
 //=============================================================================
 time_t getNewNtpTime()
 {
 
- time_t t = 0;
+ time_t epochTime = 0;
 
-    // Try up to 3 times to get time
-    for (byte cnt = 0; cnt < 3; cnt++)
+    // Looop several times to get NTP time
+    for (byte cnt = 0; cnt < 10; cnt++)
     {
-      t = decodeNtpTime(g_timeServer);
-      if ( t != 0 )
+      epochTime = decodeNtpTime(g_timeServer1);
+      if ( epochTime != 0 )
       { 
         #ifdef PRINT_DEBUG
-          Serial.println(F("Got NTP time"));
+          Serial.print(F("Got NTP time - "));
+          Serial.println(g_timeServer1);
         #endif
-        return t;
+        return epochTime;  // exits sub 
       }
-      else
-      { // didn't get teim
+      else // didn't get time.  Try other server
+      { 
         #ifdef PRINT_DEBUG
-          Serial.println(F("Didn't get NTP time"));
+          Serial.print(F("Didn't get NTP time - "));
+          Serial.println(g_timeServer1);
         #endif
-        if (cnt < 2)
-        { delay(2000); }
+        delay(2000);
+        epochTime = decodeNtpTime(g_timeServer2);
+        if ( epochTime != 0 )
+        { 
+          #ifdef PRINT_DEBUG
+            Serial.print(F("Got NTP time - "));
+            Serial.println(g_timeServer2);
+          #endif
+          return epochTime;  // exits sub 
+        }
+        else // didn't get from 2nd server
+        {
+          #ifdef PRINT_DEBUG
+            Serial.print(F("Didn't get NTP time - "));
+            Serial.println(g_timeServer1);
+          #endif
+          delay(2000);
+        }
       }
-    } // cnt
+    } // end for loop
  
    return 0;  // Didn't get time
  
-
 } // end getNewNtpTime()
 
 
