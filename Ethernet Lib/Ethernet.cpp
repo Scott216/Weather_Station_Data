@@ -1,3 +1,6 @@
+// Modified by SurferTim so different SS pins can be used
+// See forum post: http://forum.arduino.cc/index.php?topic=217423.msg1601862#msg1601862
+
 #include "w5100.h"
 #include "Ethernet.h"
 #include "Dhcp.h"
