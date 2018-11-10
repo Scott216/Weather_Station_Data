@@ -105,13 +105,15 @@ Change log:
 12/24/17 v0.59 - Added PRINT_WEATHER_DATA to enable/disable printing weather data table.  Used to be part of PRINT_DEBUG    
 12/28/17 v0.60 - Added print when hopCount is reset because it's too high.  Removed isNptTimeOk since I'm using now in upload 
                  Removed g_rainCounter and rainSeconds from printData()
-01/11/18 v1.61 - Moved MAC and IP setup into #if defined that deteects Moteino Mega vs standard so IP and MAC are different
+01/11/18 v0.61 - Moved MAC and IP setup into #if defined that deteects Moteino Mega vs standard so IP and MAC are different
+01/29/18 v0.62 - After 10 min WDT is not disabled during radio retrieval of data
+01/29/18 v0.63 - Undid v0.62
 */
 
-#define VERSION "v0.61" // Version of this program
+#define VERSION "v0.63" // Version of this program
 
 #define PRINT_DEBUG     // Comment out to remove many of the Serial.print() statements
-#define PRINT_WEATHER_DATA // Prints weather data table.  Comment out to turn off
+// #define PRINT_WEATHER_DATA // Prints weather data table.  Comment out to turn off
 #define PRINT_DEBUG_WU_UPLOAD // Prints out messages related to Weather Underground upload. Comment out to turn off
 #define PRINT_SETUP_INFO   // Prints which Moteino selected, reboots and free RAM from setip().  Comment out to turn off
 
@@ -131,8 +133,8 @@ Change log:
 #include "Tokens.h"            // Holds Weather Underground password
 
 
-#define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID - test station
-// #define WUNDERGROUND_STATION_ID "KVTWESTD3" // Weather Underground station ID - normal station
+// #define WUNDERGROUND_STATION_ID "KVTDOVER3" // Weather Underground station ID - test station
+#define WUNDERGROUND_STATION_ID "KVTWESTD3" // Weather Underground station ID - normal station
 const float ALTITUDE = 603.0;               // Altitude of weather station (in meters).  Used for sea level pressure calculation, see http://bit.ly/1qYzlE6
 const byte TRANSMITTER_STATION_ID = 1;      // Davis ISS station ID to be monitored.  Default station ID is normally 1
 
@@ -459,7 +461,7 @@ bool getWirelessData()
       Serial.println(F("---Got CRC error")); // srg12 temp debug
     }
     
-    // Weather CRC is right or not, we count that as reception and hop
+    // Whether CRC is right or not, we count that as reception and hop
     lastRxTime = micros()/1000UL;
     radio.hop();
   } // end if(radio.receiveDone())
